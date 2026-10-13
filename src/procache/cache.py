@@ -55,6 +55,15 @@ class SQLiteResponseCache:
     value instead of issuing a request storm.
     """
 
+    # The first write of each instance and every PRUNE_EVERY-th after it
+    # retires up to PRUNE_BATCH expired rows: on average four per write, which
+    # outpaces insertion so the file stops growing, while the write lock and
+    # the per-write cost stay small.
+    PRUNE_BATCH = 64
+    PRUNE_EVERY = 16
+    # Longest pause between checks while another process loads the same key.
+    MAX_WAIT_INTERVAL = 0.5
+
     _locks: dict[str, threading.Lock] = {}
     _locks_guard = threading.Lock()
 
@@ -68,6 +77,7 @@ class SQLiteResponseCache:
         self.path = Path(path)
         self.namespace = namespace
         self._clock = time.time if clock is None else clock
+        self._writes = 0
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             db.execute("""
@@ -132,13 +142,24 @@ class SQLiteResponseCache:
     def put(self, key: str, value: bytes, *, ttl: float, etag: str | None = None) -> CacheEntry:
         if ttl <= 0:
             raise ValueError("cache TTL must be positive")
-        expires_at = self._clock() + ttl
+        now = self._clock()
+        expires_at = now + ttl
         with self._connect() as db:
             db.execute(
                 "INSERT OR REPLACE INTO responses(namespace,cache_key,value,expires_at,etag,updated_at) "
                 "VALUES(?,?,?,?,?,?)",
-                (self.namespace, key, sqlite3.Binary(value), expires_at, etag, self._clock()),
+                (self.namespace, key, sqlite3.Binary(value), expires_at, etag, now),
             )
+            # Nothing else removes expired reads, so writes retire a bounded
+            # batch inside the transaction they already hold.
+            if self._writes % self.PRUNE_EVERY == 0:
+                db.execute(
+                    "DELETE FROM responses WHERE rowid IN (SELECT rowid FROM responses "
+                    "WHERE namespace=? AND expires_at<=? LIMIT ?)",
+                    (self.namespace, now, self.PRUNE_BATCH),
+                )
+                db.execute("DELETE FROM flights WHERE namespace=? AND expires_at<=?", (self.namespace, now))
+            self._writes += 1
         return CacheEntry(key=key, value=value, expires_at=expires_at, etag=etag)
 
     def get_or_set(
@@ -161,15 +182,19 @@ class SQLiteResponseCache:
             return cached.value, True
         with self._lock_for(f"{self.namespace}:{key}"):
             owner = uuid.uuid4().hex
+            interval = 0.05
             while True:
                 if cooldown_key is not None:
                     self.raise_if_cooling_down(cooldown_key)
                 cached = self.get(key)
                 if cached is not None:
                     return cached.value, True
-                if self._claim_flight(key, owner):
+                # Waiters only read while another process holds the flight;
+                # claiming takes the database write lock.
+                if not self._flight_active(key) and self._claim_flight(key, owner):
                     break
-                time.sleep(0.05)
+                time.sleep(interval)
+                interval = min(interval * 2, self.MAX_WAIT_INTERVAL)
             try:
                 # A previous flight may have completed between the cache check
                 # and the claim if it was released just before our transaction.
@@ -187,6 +212,14 @@ class SQLiteResponseCache:
                 return value, False
             finally:
                 self._release_flight(key, owner)
+
+    def _flight_active(self, key: str) -> bool:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT 1 FROM flights WHERE namespace=? AND cache_key=? AND expires_at>?",
+                (self.namespace, key, self._clock()),
+            ).fetchone()
+        return row is not None
 
     def _claim_flight(self, key: str, owner: str, *, ttl: float = 120.0) -> bool:
         now = self._clock()
