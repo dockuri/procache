@@ -1,0 +1,112 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-004",
+  "summary": "Upgrade new-project governance adoption to 0.20.97",
+  "workstream": "governance",
+  "classification": {
+    "kind": "SERVICE",
+    "priority": "P2",
+    "origin": "health"
+  },
+  "allowedPaths": [
+    ".githooks/**",
+    ".github/workflows/new-project-governance.yml",
+    ".gitignore",
+    ".governance/**",
+    "AGENTS.md",
+    "TODO.md",
+    "project/TICKETS.md",
+    "project/new-ticket.sh",
+    "project/readme.sh",
+    "project/ticket-004/**",
+    "pyproject.toml",
+    "scripts/install-agent-hosts.sh",
+    "scripts/runtime.sh",
+    "wellmanifest_governance.py",
+    "worktree-guard.yaml"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "18fb7138d8e9b1919a1e934d0ae6b19bf97cbc2b",
+    "targetBranch": "main",
+    "outcome": "procache's managed governance adoption is upgraded from new-project 0.20.35 to 0.20.97 with the pinned updater, so new-ticket.sh allocates tickets in linked worktrees instead of scaffolding them on main, and the gate matches the rest of the subactor repositories.",
+    "nonGoals": [
+      "Hand-edit managed files or hashes",
+      "Change procache code, tests or docs",
+      "Change required check names or repository settings"
+    ],
+    "complexity": "S",
+    "estimatedMinutes": 30,
+    "budgets": {
+      "maxImplementationFiles": 3,
+      "maxAffectedComponents": 2,
+      "maxPublicInterfaceChanges": 0,
+      "maxRuntimeDependencies": 0
+    },
+    "architecture": {
+      "status": "accepted",
+      "decision": "Run create_adoption_lock.py --upgrade from a clone of wellmanifest/new-project at c6587635bafb054241fd71fd22793af47acae83b (0.20.97, the revision adopted by wellmanifest/data-plane); --check then reports up-to-date. Regenerate the pyproject.toml [tool.wellmanifest] declaration from the new lock, as GOV-PACKAGING-002 requires.",
+      "components": [
+        {
+          "name": "managed-governance",
+          "paths": [
+            ".githooks/**",
+            ".github/workflows/new-project-governance.yml",
+            ".gitignore",
+            ".governance/**",
+            "AGENTS.md",
+            "project/new-ticket.sh",
+            "project/readme.sh",
+            "scripts/install-agent-hosts.sh",
+            "scripts/runtime.sh",
+            "wellmanifest_governance.py",
+            "worktree-guard.yaml"
+          ]
+        },
+        {
+          "name": "package-declaration",
+          "paths": [
+            "pyproject.toml"
+          ]
+        }
+      ],
+      "responsibilityChanges": false,
+      "interfaceChanges": [],
+      "dataChanges": [],
+      "ui": {
+        "impact": "none",
+        "states": [],
+        "evidence": []
+      },
+      "rollback": "Close the PR; after publication downgrade only through the pinned updater in a new governance ticket."
+    },
+    "runtimeDependencies": [],
+    "validation": [
+      {
+        "criterion": "AC-02",
+        "commands": [
+          "python3 <new-project@c6587635>/scripts/create_adoption_lock.py --target-root . --source-revision c6587635bafb054241fd71fd22793af47acae83b --check"
+        ],
+        "evidence": ".governance/manifest.lock.json"
+      },
+      {
+        "criterion": "AC-03",
+        "commands": [
+          "./project/governance-check.sh"
+        ],
+        "evidence": "project/ticket-004/README.md"
+      }
+    ],
+    "standardAdoption": {
+      "sourceRepository": "wellmanifest/new-project",
+      "fromRevision": "cfaa0bf0ea6b0e7349fed0bb62b5ce15792d687d",
+      "toRevision": "c6587635bafb054241fd71fd22793af47acae83b"
+    }
+  }
+}
