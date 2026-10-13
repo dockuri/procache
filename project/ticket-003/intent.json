@@ -1,0 +1,90 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-003",
+  "summary": "Bound shared cache growth and stop write-lock polling while waiting for a flight",
+  "workstream": "application",
+  "classification": {
+    "kind": "SERVICE",
+    "priority": "P2",
+    "origin": "health"
+  },
+  "allowedPaths": [
+    "project/ticket-003/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    "src/procache/cache.py",
+    "tests/test_cache.py"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "b627b3d61baa61d6747361bbba6cd571ce290d74",
+    "targetBranch": "main",
+    "outcome": "The shared response cache stops growing without bound and waiters for another process's load no longer take the database write lock, reducing lock waits that surface as 'database is locked' in Validator runs.",
+    "nonGoals": [
+      "No change to cache keys, TTLs, namespaces or read semantics",
+      "No schema change or one-off compaction of existing cache files",
+      "No change to consumers or their pinned versions"
+    ],
+    "complexity": "S",
+    "estimatedMinutes": 60,
+    "budgets": {
+      "maxImplementationFiles": 2,
+      "maxAffectedComponents": 1,
+      "maxPublicInterfaceChanges": 0,
+      "maxRuntimeDependencies": 0
+    },
+    "architecture": {
+      "status": "accepted",
+      "decision": "Each put retires a bounded batch of expired rows and expired flights of its namespace inside the write transaction it already holds; waiters check the flight with a read and back off to 0.5 s before attempting a claim.",
+      "components": [
+        {
+          "name": "response-cache",
+          "paths": [
+            "src/procache/cache.py",
+            "tests/test_cache.py"
+          ]
+        }
+      ],
+      "responsibilityChanges": false,
+      "interfaceChanges": [],
+      "dataChanges": [],
+      "ui": {
+        "impact": "none",
+        "states": [],
+        "evidence": []
+      },
+      "rollback": "Revert the commit; cached rows stay valid and expired rows are simply no longer retired."
+    },
+    "runtimeDependencies": [],
+    "validation": [
+      {
+        "criterion": "AC-01",
+        "commands": [
+          "python -m pytest -q tests/test_cache.py -k retire"
+        ],
+        "evidence": "Expired rows retired in batches; live rows and other namespaces kept"
+      },
+      {
+        "criterion": "AC-02",
+        "commands": [
+          "python -m pytest -q tests/test_cache.py -k 'waiter or stale'"
+        ],
+        "evidence": "No claim while a flight is active; stale flight reclaimed"
+      },
+      {
+        "criterion": "AC-03",
+        "commands": [
+          "python -m pytest -q",
+          "project/governance-check.sh"
+        ],
+        "evidence": "Full suite and governance gate"
+      }
+    ]
+  }
+}
