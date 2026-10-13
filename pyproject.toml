@@ -22,6 +22,6 @@ line-length = 120
 target-version = "py311"
 
 [tool.wellmanifest]
-standard = "0.20.35"
-revision = "cfaa0bf0ea6b0e7349fed0bb62b5ce15792d687d"
+standard = "0.20.97"
+revision = "c6587635bafb054241fd71fd22793af47acae83b"
 gate = "project/governance-check.sh"
