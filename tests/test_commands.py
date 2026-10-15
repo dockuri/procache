@@ -1,7 +1,8 @@
-from procache import CachedReadCommand, SQLiteResponseCache
 import subprocess
 
 import pytest
+
+from procache import CachedReadCommand, SQLiteResponseCache
 
 
 def test_only_read_gh_commands_are_cacheable(tmp_path):
@@ -90,11 +91,11 @@ def test_credentials_config_and_repository_context_partition_cache(tmp_path, mon
         calls.append(args)
         return subprocess.CompletedProcess(args, 0, str(len(calls)), '')
     monkeypatch.setattr('procache.commands.subprocess.run', execute)
-    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_TOKEN': 'synthetic-secret-a'}
+    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_TOKEN': 'test-credential-a'}
     args = ['gh', 'api', 'user']
     first = runner.run(args, env=env)
     assert runner.run(args, env=env).stdout == first.stdout
-    env['GH_TOKEN'] = 'synthetic-secret-b'
+    env['GH_TOKEN'] = 'test-credential-b'
     assert runner.run(args, env=env).stdout != first.stdout
     config = tmp_path / 'gh'
     config.mkdir()
@@ -105,7 +106,7 @@ def test_credentials_config_and_repository_context_partition_cache(tmp_path, mon
     monkeypatch.chdir(other)
     assert not runner.run(args, env=env).cache_hit
     assert len(calls) == 4
-    assert b'synthetic-secret' not in (tmp_path / 'cache.sqlite3').read_bytes()
+    assert b'test-credential' not in (tmp_path / 'cache.sqlite3').read_bytes()
 
 
 def test_textual_403_stops_further_commands_for_same_identity(tmp_path, monkeypatch):
@@ -117,7 +118,7 @@ def test_textual_403_stops_further_commands_for_same_identity(tmp_path, monkeypa
     cache = SQLiteResponseCache(tmp_path / 'cache.sqlite3')
     first = CachedReadCommand(cache)
     second = CachedReadCommand(cache)
-    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_TOKEN': 'synthetic-a'}
+    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_TOKEN': 'test-credential-a'}
     assert first.run(['gh', 'api', 'user'], env=env).returncode == 1
     assert second.run(['gh', 'api', 'repos/acme/demo'], env=env).returncode == 75
     assert len(calls) == 1
@@ -127,3 +128,25 @@ def test_unrelated_issue_number_is_not_a_rate_limit():
     from procache import is_rate_limit_error
     assert not is_rate_limit_error(RuntimeError('Issue 429 is missing'))
     assert not is_rate_limit_error(RuntimeError('HTTP 403: permission denied'))
+
+
+def test_branch_name_in_cli_diagnostic_does_not_block_the_next_read(tmp_path, monkeypatch):
+    calls = []
+    message = "no required checks reported on the 'ticket/030-distinguish-authority-denial-from-remote-rate-limiting' branch"
+
+    def execute(args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(args, 1, '', message)
+        return subprocess.CompletedProcess(args, 0, '{}', '')
+
+    monkeypatch.setattr('procache.commands.subprocess.run', execute)
+    cache = SQLiteResponseCache(tmp_path / 'cache.sqlite3')
+    first = CachedReadCommand(cache)
+    second = CachedReadCommand(cache)
+    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_TOKEN': 'test-credential-a'}
+    failure = first.run(['gh', 'pr', 'checks', '34', '--required'], env=env)
+    assert (failure.returncode, failure.stderr) == (1, message)
+    following = second.run(['gh', 'api', 'repos/acme/demo/commits/head/status'], env=env)
+    assert following.returncode == 0
+    assert len(calls) == 2

@@ -4,7 +4,47 @@ from multiprocessing import get_context
 
 import pytest
 
-from procache import ProviderCooldownError, SQLiteResponseCache
+from procache import ProviderCooldownError, SQLiteResponseCache, is_rate_limit_error
+
+
+@pytest.mark.parametrize("message", [
+    "no required checks reported on the 'ticket/030-distinguish-authority-denial-from-remote-rate-limiting' branch",
+    "HTTP 404: repository acme/rate-limit-tools not found",
+    "cannot open '/tmp/rate limit exceeded.log'",
+    "missing https://example.test/secondary-limit and docs/abuse-detection.md",
+    "HTTP 403: permission denied",
+    "provider unavailable",
+    "Issue 429 is missing",
+])
+def test_resource_names_and_ordinary_errors_are_not_throttling(message):
+    assert not is_rate_limit_error(RuntimeError(message))
+
+
+@pytest.mark.parametrize("message", [
+    "HTTP 429 Too Many Requests",
+    "gh: HTTP 403: API rate limit exceeded",
+    "You have exceeded a secondary rate limit. Please wait.",
+    "secondary limit; try again later",
+    "You have triggered an abuse detection mechanism",
+    "Requests are temporarily rate-limited",
+    '{"message":"API rate limit exceeded"}',
+])
+def test_explicit_provider_throttling_diagnostics_are_preserved(message):
+    assert is_rate_limit_error(RuntimeError(message))
+
+
+@pytest.mark.parametrize("status,headers,expected", [
+    (429, {}, True),
+    (403, {"X-RateLimit-Remaining": "0"}, True),
+    (403, {"Retry-After": "60"}, True),
+    (403, {"X-RateLimit-Remaining": "100"}, False),
+    (403, {}, False),
+])
+def test_structured_throttling_evidence_takes_precedence(status, headers, expected):
+    error = RuntimeError("request denied")
+    error.status_code = status
+    error.headers = headers
+    assert is_rate_limit_error(error) is expected
 
 
 def test_cache_persists_and_expires(tmp_path):

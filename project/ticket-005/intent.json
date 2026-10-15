@@ -1,0 +1,85 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-005",
+  "summary": "Classify provider diagnostics without resource name false positives",
+  "workstream": "application",
+  "classification": {
+    "kind": "BUG",
+    "priority": "P1",
+    "origin": "regression"
+  },
+  "allowedPaths": [
+    "project/ticket-005/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    "src/procache/cache.py",
+    "tests/test_cache.py",
+    "tests/test_commands.py"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "72347b5ea4ed0d56bde62096843c49cdb2e411ba",
+    "targetBranch": "main",
+    "outcome": "Prevent incidental resource names from creating a provider cooldown; preserve real throttling and publish the focused fix.",
+    "nonGoals": [
+      "No review/check bypass, credential changes or manual cooldown deletion.",
+      "No broad cache identity or provider policy change."
+    ],
+    "complexity": "S",
+    "estimatedMinutes": 60,
+    "budgets": {
+      "maxImplementationFiles": 3,
+      "maxAffectedComponents": 1,
+      "maxPublicInterfaceChanges": 0,
+      "maxRuntimeDependencies": 0
+    },
+    "architecture": {
+      "status": "accepted",
+      "decision": "Recognize structured throttling or explicit diagnostic phrases, rather than arbitrary resource-name substrings; retain real429 and403 response-header evidence.",
+      "components": [
+        {
+          "name": "provider-read-cache",
+          "paths": [
+            "src/procache/cache.py",
+            "tests/test_cache.py",
+            "tests/test_commands.py"
+          ]
+        }
+      ],
+      "responsibilityChanges": false,
+      "interfaceChanges": [],
+      "dataChanges": [],
+      "ui": {
+        "impact": "none",
+        "states": [],
+        "evidence": []
+      },
+      "rollback": "Restore prior immutable package artifact and retain shared cache state and publication evidence."
+    },
+    "runtimeDependencies": [],
+    "validation": [
+      {
+        "criterion": "AC-03",
+        "commands": [
+          "python3 -m pytest -q",
+          "ruff check src/procache/cache.py tests/test_cache.py tests/test_commands.py",
+          "bash project/governance-check.sh"
+        ],
+        "evidence": "Regression for the exact gh stderr plus genuine provider limit cases and shared-command cache behavior."
+      },
+      {
+        "criterion": "AC-04",
+        "commands": [
+          "Independent protected Validator exact-head merge"
+        ],
+        "evidence": "Trusted App approval and merge readback, followed by separately verified consumer adoption."
+      }
+    ]
+  }
+}
