@@ -7,9 +7,10 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import ClassVar
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,19 @@ def is_rate_limit_error(error: Exception) -> bool:
     headers = {str(k).lower(): str(v) for k, v in headers.items()} if isinstance(headers, dict) else {}
     if status == 403 and (headers.get("x-ratelimit-remaining") == "0" or "retry-after" in headers):
         return True
-    return any(marker in message for marker in ("rate limit", "rate-limit", "secondary limit", "abuse detection"))
+    # CLI stderr can contain branch names, paths and URLs. Those identifiers
+    # are not provider evidence, even when named rate-limit or similar.
+    message = re.sub(r"(['\"`])(?:\.{0,2}/|[\w.-]+/|https?://)[^\r\n]*?\1", " ", message)
+    message = re.sub(r"(?<!\w)(?:https?://|(?:[\w.-]+/)+)\S+", " ", message)
+    diagnostics = (
+        r"\brate[ -]limits?\s+(?:exceeded|exhausted|reached)\b",
+        r"\b(?:exceeded|hit|reached|triggered)\s+(?:(?:an?|the|your|api|secondary)\s+){0,4}rate[ -]limits?\b",
+        r"\bsecondary[ -](?:rate[ -])?limit\b",
+        r"\babuse detection mechanism\b",
+        r"\brate-limited\b|\btoo many requests\b",
+        r"^\s*(?:error[: ]+)?(?:api )?rate[ -]limit[.!]?\s*$",
+    )
+    return any(re.search(pattern, message) for pattern in diagnostics)
 
 
 class SQLiteResponseCache:
@@ -64,7 +77,7 @@ class SQLiteResponseCache:
     # Longest pause between checks while another process loads the same key.
     MAX_WAIT_INTERVAL = 0.5
 
-    _locks: dict[str, threading.Lock] = {}
+    _locks: ClassVar[dict[str, threading.Lock]] = {}
     _locks_guard = threading.Lock()
 
     def __init__(
