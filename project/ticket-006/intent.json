@@ -1,0 +1,74 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-006",
+  "summary": "Align governance repository identity with dockuri/procache",
+  "workstream": "governance",
+  "classification": {
+    "kind": "SERVICE",
+    "priority": "P2",
+    "origin": "health"
+  },
+  "allowedPaths": [
+    "project/ticket-006/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    ".governance/required-checks.json"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "0e05c6e05020f4b6d9f9944b714670870f62cbc9",
+    "targetBranch": "main",
+    "outcome": "Align the governance repository identity with canonical dockuri/procache and publish the existing isolated correction",
+    "nonGoals": [
+      "Publishing the unrelated 770343 SQLite optimization",
+      "Changing governance standards or required checks",
+      "Publishing the HTTP adapter before its own verification"
+    ],
+    "complexity": "S",
+    "estimatedMinutes": 20,
+    "budgets": {
+      "maxImplementationFiles": 1,
+      "maxAffectedComponents": 1,
+      "maxPublicInterfaceChanges": 0,
+      "maxRuntimeDependencies": 0
+    },
+    "architecture": {
+      "status": "accepted",
+      "decision": "Retain the existing required checks and change only their repository identity; continue the actual allocated ticket under explicit user handoff",
+      "components": [
+        {
+          "name": "canonical-repository-identity",
+          "paths": [
+            ".governance/required-checks.json"
+          ]
+        }
+      ],
+      "responsibilityChanges": false,
+      "interfaceChanges": [],
+      "dataChanges": [],
+      "ui": {
+        "impact": "none",
+        "states": [],
+        "evidence": []
+      },
+      "rollback": "Revert the exact identity correction through protected delivery"
+    },
+    "runtimeDependencies": [],
+    "validation": [
+      {
+        "criterion": "AC-02",
+        "commands": [
+          "./project/governance-check.sh",
+          "python3 -B -m pytest -q"
+        ],
+        "evidence": "Canonical identity readback, unchanged required check names, complete original cache suite and protected canonical local CI"
+      }
+    ]
+  }
+}

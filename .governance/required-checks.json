@@ -1,5 +1,5 @@
 {
-  "repository": "subactor/procache",
+  "repository": "dockuri/procache",
   "requiredChecks": [
     {
       "name": "governance / remote lifecycle",
@@ -11,5 +11,5 @@
     }
   ],
   "schema": "new-project.required-checks/v1",
-  "version": 1
+  "version": 2
 }
