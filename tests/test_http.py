@@ -284,7 +284,9 @@ def test_shared_factory_reuses_records_and_invalidates_across_applications(tmp_p
                          scope=scope, cacheable=True).body == b"new"
 
 
-@pytest.mark.parametrize("credentials", [(), (None,), ("",), (b"",), (None, "", b"")])
+@pytest.mark.parametrize("credentials", [(), (None,), ("",), (b"",), (None, "", b""),
+                                         ("known", None), (None, "known"), ("known", ""),
+                                         (b"", "tenant"), ("known", "tenant", None)])
 def test_missing_credentials_do_not_create_a_shared_known_principal(cache, credentials):
     scope = cache.credential_scope(*credentials)
     assert scope is None
@@ -295,6 +297,60 @@ def test_missing_credentials_do_not_create_a_shared_known_principal(cache, crede
                                  scope=scope, cacheable=True)
         assert not response.cache_hit
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("mode", [0o755, 0o770, 0o777])
+def test_shared_store_rejects_existing_nonprivate_directory(tmp_path, mode):
+    directory = tmp_path / "shared"
+    directory.mkdir(mode=mode)
+    directory.chmod(mode)
+    with pytest.raises(ValueError, match="owned and private"):
+        CachedHTTPReads.shared(path=directory / "cache.sqlite3")
+    assert directory.stat().st_mode & 0o777 == mode
+    assert not (directory / "cache.sqlite3").exists()
+
+
+def test_shared_store_rejects_replaceable_private_directory(tmp_path):
+    writable = tmp_path / "writable"
+    writable.mkdir()
+    writable.chmod(0o777)
+    private = writable / "private"
+    private.mkdir(mode=0o700)
+    with pytest.raises(ValueError, match="ancestor"):
+        CachedHTTPReads.shared(path=private / "cache.sqlite3")
+    assert not (private / "cache.sqlite3").exists()
+
+
+def test_shared_store_rejects_symlink_directory_before_creating_store(tmp_path):
+    actual = tmp_path / "actual"
+    actual.mkdir(mode=0o700)
+    alias = tmp_path / "alias"
+    alias.symlink_to(actual, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlinks"):
+        CachedHTTPReads.shared(path=alias / "new" / "cache.sqlite3")
+    assert not (actual / "new").exists()
+
+
+def test_concurrent_public_reads_only_deliver_cookies_to_transport_owner(tmp_path):
+    caches = [CachedHTTPReads.shared(path=tmp_path / "shared.sqlite3") for _ in range(8)]
+    start = threading.Barrier(len(caches))
+    calls = []
+
+    def load():
+        calls.append(1)
+        return HTTPResponse(200, {"Cache-Control": "public, max-age=60", "Set-Cookie": "edge=unique"}, b"catalog")
+
+    def read(cache):
+        start.wait(timeout=5)
+        return cache.request("GET", "https://a.test/models", load, scope="anonymous", cacheable=True)
+
+    with ThreadPoolExecutor(max_workers=len(caches)) as pool:
+        results = list(pool.map(read, caches))
+    assert len(calls) == 1
+    assert sum(response.cache_hit for response in results) == len(caches) - 1
+    for response in results:
+        assert response.body == b"catalog"
+        assert ("Set-Cookie" in response.headers) == (not response.cache_hit)
 
 
 def test_short_lived_reader_cannot_reuse_a_longer_lived_entry(tmp_path):
