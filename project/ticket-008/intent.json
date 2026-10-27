@@ -1,0 +1,80 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-008",
+  "summary": "Harden shared HTTP cache identity and private storage",
+  "workstream": "application",
+  "classification": {
+    "kind": "SERVICE",
+    "priority": "P2",
+    "origin": "health"
+  },
+  "allowedPaths": [
+    "project/ticket-008/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    "src/procache/http.py",
+    "tests/test_http.py"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "0796047687738e5ca61f94bc57470233dc35d06e",
+    "targetBranch": "main",
+    "outcome": "Reject incomplete account identity and unsafe cache directories; prove single-flight responses do not replay cookies",
+    "nonGoals": [
+      "Caching mutations, streaming or authorization decisions",
+      "Dependency version changes or publication of pre-existing unrelated commits"
+    ],
+    "complexity": "S",
+    "estimatedMinutes": 40,
+    "budgets": {
+      "maxImplementationFiles": 2,
+      "maxAffectedComponents": 2,
+      "maxPublicInterfaceChanges": 0,
+      "maxRuntimeDependencies": 0
+    },
+    "architecture": {
+      "status": "accepted",
+      "decision": "Use canonical HTTP adapter and require a trusted private directory before SQLite can reopen its path",
+      "components": [
+        {
+          "name": "provider-read-cache",
+          "paths": [
+            "src/procache/http.py"
+          ]
+        },
+        {
+          "name": "regressions",
+          "paths": [
+            "tests/test_http.py"
+          ]
+        }
+      ],
+      "responsibilityChanges": false,
+      "interfaceChanges": [],
+      "dataChanges": [],
+      "ui": {
+        "impact": "none",
+        "states": [],
+        "evidence": []
+      },
+      "rollback": "Revert the exact implementation through protected delivery"
+    },
+    "runtimeDependencies": [],
+    "validation": [
+      {
+        "criterion": "AC-02",
+        "commands": [
+          "python3 -B -m pytest -q tests/test_http.py",
+          "./project/governance-check.sh"
+        ],
+        "evidence": "Regression tests cover partial missing credentials, unsafe directories and concurrent cookie handling"
+      }
+    ]
+  }
+}

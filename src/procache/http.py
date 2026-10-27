@@ -56,8 +56,12 @@ class CachedHTTPReads:
     def shared(cls, *, path: str | Path | None = None, ttl: float = 15.0) -> CachedHTTPReads:
         """Use the common cross-application HTTP namespace and private store."""
         root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-        location = Path(path or os.environ.get("SUBACTOR_PROCACHE_PATH") or root / "subactor" / "provider-http.sqlite3")
+        location = Path(path or os.environ.get("SUBACTOR_PROCACHE_PATH") or root / "subactor" / "provider-http.sqlite3").absolute()
+        if ".." in location.parts:
+            raise ValueError("HTTP cache path must not contain parent traversal")
+        cls._private_directory(location.parent, require_exists=False)
         location.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        cls._private_directory(location.parent, require_exists=True)
         if location.is_symlink():
             raise ValueError("HTTP cache must be a regular private file")
         descriptor = os.open(location, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -74,12 +78,36 @@ class CachedHTTPReads:
         return cls(SQLiteResponseCache(location, namespace="provider-http-v1"), ttl=ttl)
 
     @staticmethod
+    def _private_directory(directory: Path, *, require_exists: bool) -> None:
+        # SQLite reopens the filename for each connection. Its parent must
+        # therefore remain private, rather than just validating the first fd.
+        # A sticky ancestor such as /tmp protects an owned child from other
+        # users; ordinary writable ancestors and symlinks do not.
+        uid = os.geteuid() if hasattr(os, "geteuid") else None
+        for parent in (*reversed(directory.parents), directory):
+            try:
+                info = parent.lstat()
+            except FileNotFoundError:
+                if require_exists:
+                    raise ValueError("HTTP cache directory must exist") from None
+                continue
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError("HTTP cache directory chain must not contain symlinks")
+            if uid is not None and info.st_uid not in {0, uid}:
+                raise ValueError("HTTP cache directory chain must be trusted")
+            if parent == directory:
+                if (uid is not None and info.st_uid != uid) or info.st_mode & 0o077:
+                    raise ValueError("HTTP cache directory must be owned and private")
+            elif info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX:
+                raise ValueError("HTTP cache directory ancestor must not be writable by other users")
+
+    @staticmethod
     def credential_scope(*credentials: object) -> str | None:
         """Hash a known identity; missing inputs retain the uncached path.
 
         Public callers can explicitly use an ``"anonymous"`` identity.
         """
-        if not credentials or all(value is None or value == "" or value == b"" for value in credentials):
+        if not credentials or any(value is None or value == "" or value == b"" for value in credentials):
             return None
         return SQLiteResponseCache.key("http-principal-v1", credentials)
 
