@@ -1,0 +1,82 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-007",
+  "summary": "Cache scoped HTTP reads across providers",
+  "workstream": "application",
+  "classification": {
+    "kind": "SERVICE",
+    "priority": "P2",
+    "origin": "health"
+  },
+  "allowedPaths": [
+    "project/ticket-007/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    "src/procache/http.py",
+    "tests/test_http.py"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "18ccfb1fa1e3b3bd85cfe3175e4db7904b608967",
+    "targetBranch": "main",
+    "outcome": "Cache repeated successful provider reads with TTL, response policy, process coalescing, fresh bypass and fenced invalidation; preserve account separation",
+    "nonGoals": [
+      "Caching mutations, streaming or authorization decisions",
+      "Dependency version changes or publication of pre-existing unrelated commits"
+    ],
+    "complexity": "M",
+    "estimatedMinutes": 60,
+    "budgets": {
+      "maxImplementationFiles": 2,
+      "maxAffectedComponents": 2,
+      "maxPublicInterfaceChanges": 1,
+      "maxRuntimeDependencies": 0
+    },
+    "architecture": {
+      "status": "accepted",
+      "decision": "Reuse the canonical procache SQLite backend and explicit request identity; use generation keys so a pre-mutation loader cannot repopulate a current read",
+      "components": [
+        {
+          "name": "provider-read-cache",
+          "paths": [
+            "src/procache/http.py"
+          ]
+        },
+        {
+          "name": "regressions",
+          "paths": [
+            "tests/test_http.py"
+          ]
+        }
+      ],
+      "responsibilityChanges": false,
+      "interfaceChanges": [
+        "Add optional scoped HTTP read adapter"
+      ],
+      "dataChanges": [],
+      "ui": {
+        "impact": "none",
+        "states": [],
+        "evidence": []
+      },
+      "rollback": "Revert the exact implementation through protected delivery"
+    },
+    "runtimeDependencies": [],
+    "validation": [
+      {
+        "criterion": "AC-02",
+        "commands": [
+          "python3 -B -m pytest -q tests/test_http.py",
+          "./project/governance-check.sh"
+        ],
+        "evidence": "Tests cover cache hits, credential isolation, invalidation, live bypass and failure behavior"
+      }
+    ]
+  }
+}
