@@ -168,13 +168,19 @@ class CachedHTTPReads:
             finally:
                 if scope:
                     self.invalidate(url, scope=scope)
-        if not scope or not cacheable or fresh or stream or (body is not None and not graphql_read):
+        request_headers = self._headers(headers or {})
+        policy = request_headers.get("cache-control", "").lower()
+        directives = {part.strip().split("=", 1)[0] for part in policy.split(",")}
+        request_fresh = bool(directives & {"no-store", "no-cache"}) or bool(
+            re.search(r'(?:^|,)\s*max-age\s*=\s*"?0"?\s*(?:,|$)', policy)
+        ) or "no-cache" in {value.strip().lower() for value in request_headers.get("pragma", "").split(",")}
+        if not scope or not cacheable or fresh or request_fresh or stream or (body is not None and not graphql_read):
             return replace(loader(), cache_hit=False)
 
         authority = self._authority(url, scope)
         epoch = self.cache.get(authority)
         key = self.cache.key("http-read-v1", authority, epoch.value.hex() if epoch else "initial",
-                             method, url, self._headers(headers or {}), parameters, body, self.ttl)
+                             method, url, request_headers, parameters, body, self.ttl)
         cached = self.cache.get(key)
         if cached is not None:
             return self._decode(cached.value, True)

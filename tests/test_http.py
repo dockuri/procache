@@ -71,6 +71,20 @@ def test_unknown_scope_and_nonrepeatable_reads_bypass(cache, bypass):
     assert len(calls) == 2
 
 
+@pytest.mark.parametrize("headers", [{"Cache-Control": "no-store"}, {"Cache-Control": "no-cache"},
+                                     {"Cache-Control": "max-age=0"}, {"Cache-Control": 'max-age="0"'},
+                                     {"Cache-Control": "max-age=0, private"}, {"Pragma": "no-cache"},
+                                     {"cAcHe-CoNtRoL": "No-Cache"}])
+def test_explicit_request_freshness_wins_over_public_response_cache_policy(cache, headers):
+    calls = []
+    for _ in range(2):
+        response = cache.request("GET", "https://a.test/models",
+                                 lambda: (calls.append(1) or HTTPResponse(200, {"Cache-Control": "public, max-age=600"}, b"record")),
+                                 scope="known", headers=headers, cacheable=True)
+        assert not response.cache_hit
+    assert len(calls) == 2
+
+
 @pytest.mark.parametrize("status,headers", [(500, {}), (403, {}), (200, {"Cache-Control": "no-store"}),
                                            (200, {"cache-control": "private, no-cache"}),
                                            (200, {"Cache-Control": "max-age=0"}),
