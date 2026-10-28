@@ -1,8 +1,119 @@
+import os
 import subprocess
 
 import pytest
 
 from procache import CachedReadCommand, SQLiteResponseCache
+
+
+@pytest.mark.parametrize('atomic', [False, True])
+def test_same_size_account_rotation_with_preserved_mtime_is_not_a_cache_hit(tmp_path, monkeypatch, atomic):
+    config = tmp_path / 'gh'
+    config.mkdir()
+    hosts = config / 'hosts.yml'
+    hosts.write_bytes(b'user: synthetic-a\n')
+    env = {'GH_CONFIG_DIR': str(config)}
+    calls = []
+    def execute(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, hosts.read_text(), '')
+    monkeypatch.setattr('procache.commands.subprocess.run', execute)
+    runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
+    args = ['gh', 'api', 'user']
+    first = runner.run(args, env=env)
+    assert runner.run(args, env=env).cache_hit
+    info = hosts.stat()
+    replacement = config / 'next-hosts.yml' if atomic else hosts
+    replacement.write_bytes(b'user: synthetic-b\n')
+    os.utime(replacement, ns=(info.st_atime_ns, info.st_mtime_ns))
+    if atomic:
+        os.replace(replacement, hosts)
+    second = runner.run(args, env=env)
+    assert not second.cache_hit and second.stdout != first.stdout
+    assert runner.run(args, env=env).cache_hit
+    assert len(calls) == 2
+
+
+def test_unchanged_credential_config_is_read_once(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from procache.commands import _credential_scope
+    config = tmp_path / 'hosts.yml'
+    config.write_bytes(b'user: synthetic\n')
+    original = Path.open
+    reads = []
+    def open_file(path, *args, **kwargs):
+        if path == config:
+            reads.append(path)
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', open_file)
+    env = {'GH_CONFIG_DIR': str(tmp_path)}
+    first = _credential_scope(env)
+    assert all(_credential_scope(env) == first for _ in range(10))
+    assert len(reads) == 1
+
+
+def test_fingerprint_cache_is_bounded_and_contains_no_raw_credentials(tmp_path):
+    from procache.commands import _FINGERPRINT_LIMIT, _credential_scope, _fingerprints
+    for number in range(_FINGERPRINT_LIMIT + 8):
+        directory = tmp_path / str(number)
+        directory.mkdir()
+        (directory / 'hosts.yml').write_bytes(b'synthetic-secret-value')
+        _credential_scope({'GH_CONFIG_DIR': str(directory)})
+    assert len(_fingerprints) <= _FINGERPRINT_LIMIT
+    assert all(len(value[1]) == 64 and 'synthetic-secret' not in value[1]
+               for value in _fingerprints.values())
+
+
+def test_replacement_during_identity_read_bypasses_cache(tmp_path, monkeypatch):
+    from pathlib import Path
+    hosts = tmp_path / 'hosts.yml'
+    hosts.write_bytes(b'user: synthetic-a\n')
+    original = Path.open
+    swapped = False
+    def open_file(path, *args, **kwargs):
+        nonlocal swapped
+        stream = original(path, *args, **kwargs)
+        if path == hosts and not swapped:
+            swapped = True
+            replacement = tmp_path / 'replacement.yml'
+            replacement.write_bytes(b'user: synthetic-b\n')
+            replacement.replace(hosts)
+        return stream
+    monkeypatch.setattr(Path, 'open', open_file)
+    calls = []
+    def execute(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, 'response', '')
+    monkeypatch.setattr('procache.commands.subprocess.run', execute)
+    runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
+    env = {'GH_CONFIG_DIR': str(tmp_path)}
+    args = ['gh', 'api', 'user']
+    assert not runner.run(args, env=env).cache_hit
+    assert not runner.run(args, env=env).cache_hit
+    assert runner.run(args, env=env).cache_hit
+    assert len(calls) == 2
+
+
+def test_unreadable_identity_never_shares_cached_reads(tmp_path, monkeypatch):
+    from pathlib import Path
+    hosts = tmp_path / 'hosts.yml'
+    hosts.write_bytes(b'user: synthetic\n')
+    original = Path.open
+    def open_file(path, *args, **kwargs):
+        if path == hosts:
+            raise PermissionError('synthetic permission denial')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', open_file)
+    calls = []
+    def execute(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, 'response', '')
+    monkeypatch.setattr('procache.commands.subprocess.run', execute)
+    runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
+    for _ in range(2):
+        assert not runner.run(['gh', 'api', 'user'], env={'GH_CONFIG_DIR': str(tmp_path)}).cache_hit
+    assert len(calls) == 2
 
 
 def test_only_read_gh_commands_are_cacheable(tmp_path):

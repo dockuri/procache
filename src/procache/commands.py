@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import subprocess
+import threading
+from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 from .cache import ProviderCooldownError, SQLiteResponseCache, is_rate_limit_error
 
@@ -95,6 +98,48 @@ class CachedReadCommand:
         return CachedCommandResult(args, proc.returncode, proc.stdout, proc.stderr)
 
 
+_FINGERPRINT_LIMIT = 16
+_fingerprints: OrderedDict[Path, tuple[tuple[int, ...], str]] = OrderedDict()
+_fingerprint_lock = threading.Lock()
+
+
+def _file_identity(info: os.stat_result) -> tuple[int, ...]:
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _github_config_fingerprint(path: Path) -> str:
+    """Reuse bounded hashes, never raw credentials, across stable file reads."""
+    path = path.absolute()
+    try:
+        identity = _file_identity(path.stat())
+    except FileNotFoundError:
+        with _fingerprint_lock:
+            _fingerprints.pop(path, None)
+        return hashlib.sha256(b"").hexdigest()
+    with _fingerprint_lock:
+        cached = _fingerprints.get(path)
+        if cached is not None and cached[0] == identity:
+            _fingerprints.move_to_end(path)
+            return cached[1]
+    with path.open("rb") as stream:
+        if _file_identity(os.fstat(stream.fileno())) != identity:
+            raise OSError("Credential configuration changed before read")
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: stream.read(65536), b""):
+            digest.update(chunk)
+        fingerprint = digest.hexdigest()
+        if _file_identity(os.fstat(stream.fileno())) != identity:
+            raise OSError("Credential configuration changed during read")
+    if _file_identity(path.stat()) != identity:
+        raise OSError("Credential configuration replaced during read")
+    with _fingerprint_lock:
+        _fingerprints[path] = (identity, fingerprint)
+        _fingerprints.move_to_end(path)
+        while len(_fingerprints) > _FINGERPRINT_LIMIT:
+            _fingerprints.popitem(last=False)
+    return fingerprint
+
+
 def _credential_scope(env: dict[str, str]) -> str:
     """Hash identity inputs; credentials never become persisted cache metadata."""
     tokens = tuple(env.get(name, "") for name in (
@@ -103,11 +148,8 @@ def _credential_scope(env: dict[str, str]) -> str:
     config = Path(env.get("GH_CONFIG_DIR") or
                   str(Path(env.get("XDG_CONFIG_HOME") or
                            str(Path(env.get("HOME") or str(Path.home())) / ".config")) / "gh"))
-    try:
-        auth_config = (config / "hosts.yml").read_bytes()
-    except FileNotFoundError:
-        auth_config = b""
-    return SQLiteResponseCache.key("auth-v1", tokens, auth_config.hex())
+    fingerprint = _github_config_fingerprint(config / "hosts.yml")
+    return SQLiteResponseCache.key("auth-v2", tokens, fingerprint)
 
 
 def _api_is_read(arguments: Sequence[str]) -> bool:
