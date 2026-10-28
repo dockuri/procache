@@ -1,0 +1,48 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-012",
+  "summary": "Protect command cache when GitHub identity is unknown",
+  "workstream": "application",
+  "classification": {
+    "kind": "BUG",
+    "priority": "P1",
+    "origin": "health"
+  },
+  "allowedPaths": [
+    "project/ticket-012/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    "src/procache/commands.py",
+    "tests/test_commands.py"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "94cb3118ede4a448a3cb2517e66a152687ff0af5",
+    "targetBranch": "main",
+    "outcome": "Prevent shared GitHub command cache reads when credentials are not explicitly available for identity, while preserving explicit-token caching and independent protected publication.",
+    "nonGoals": [
+      "Do not read credentials from the system keyring, change provider transport or alter the persistent cache schema."
+    ],
+    "complexity": "S",
+    "estimatedMinutes": 45,
+    "budgets": {"maxImplementationFiles": 2, "maxAffectedComponents": 1, "maxPublicInterfaceChanges": 0, "maxRuntimeDependencies": 0},
+    "architecture": {
+      "status": "accepted",
+      "decision": "Bypass command caching when explicit GitHub tokens are absent, because GitHub CLI can authenticate through a credential store outside hosts.yml. Retain hashed token identity and cache behavior for explicit tokens.",
+      "components": [{"name": "command cache identity", "paths": ["src/procache/commands.py", "tests/test_commands.py"]}],
+      "responsibilityChanges": false,
+      "interfaceChanges": [],
+      "dataChanges": [],
+      "ui": {"impact": "none", "states": [], "evidence": []},
+      "rollback": "Revert the protected source change; no cache database migration is required."
+    },
+    "runtimeDependencies": [],
+    "validation": [{"criterion": "AC-01", "commands": ["python -m pytest -q tests/test_commands.py", "project/governance-check.sh"], "evidence": "Simulated hidden credential rotation bypasses cache; explicit-token identity caches and rotates without exposing credentials."}]
+  }
+}
