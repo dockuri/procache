@@ -54,7 +54,7 @@ class CachedReadCommand:
         # gh can keep its effective token in the system credential store,
         # independently of hosts.yml. A username or unchanged config file is
         # therefore not enough to identify that credential across requests.
-        if not any(effective_env.get(name) for name in _TOKEN_ENVIRONMENT):
+        if not _cacheable_credential(argv, effective_env):
             return self._execute(argv, timeout=timeout, env=env)
         scope = tuple(
             (name, effective_env.get(name, ""))
@@ -105,6 +105,8 @@ class CachedReadCommand:
 
 _FINGERPRINT_LIMIT = 16
 _TOKEN_ENVIRONMENT = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+_API_VALUES = {"-X", "--method", "-f", "--raw-field", "-F", "--field",
+               "-H", "--header", "--hostname", "-q", "--jq", "-t", "--template", "-p", "--preview"}
 _fingerprints: OrderedDict[Path, tuple[tuple[int, ...], str]] = OrderedDict()
 _fingerprint_lock = threading.Lock()
 
@@ -156,10 +158,47 @@ def _credential_scope(env: dict[str, str]) -> str:
     return SQLiteResponseCache.key("auth-v2", tokens, fingerprint)
 
 
+def _cacheable_credential(argv: Sequence[str], env: dict[str, str]) -> bool:
+    public = bool(env.get("GH_TOKEN") or env.get("GITHUB_TOKEN"))
+    enterprise = bool(env.get("GH_ENTERPRISE_TOKEN") or env.get("GITHUB_ENTERPRISE_TOKEN"))
+    if public and enterprise:
+        return True
+    if not (public or enterprise) or len(argv) < 2 or argv[1] != "api":
+        return False
+    # A host-qualified repository can affect host selection. Avoid guessing how
+    # it interacts with gh's repository context when only one token is known.
+    if str(env.get("GH_REPO", "")).count("/") >= 2:
+        return False
+    host = None
+    arguments = argv[2:]
+    index = 0
+    while index < len(arguments):
+        token = arguments[index]
+        option, separator, value = token.partition("=")
+        if not separator and len(token) > 2 and token[:2] in {"-X", "-f", "-F", "-H", "-q", "-t", "-p"}:
+            option, value, separator = token[:2], token[2:], "="
+        if option in _API_VALUES:
+            if not separator:
+                index += 1
+                if index >= len(arguments):
+                    return False
+                value = arguments[index]
+            if option == "--hostname":
+                if host is not None:
+                    return False
+                host = value
+        elif not token.startswith("-") and re.match(r"(?i)^https?://", token):
+            # A URL-shaped endpoint may select a host independently of flags.
+            return False
+        index += 1
+    host = (host or env.get("GH_HOST") or "github.com").lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", host) or host.endswith(".ghe.com"):
+        return False
+    return public if host == "github.com" else enterprise
+
+
 def _api_is_read(arguments: Sequence[str]) -> bool:
     """Recognize gh's effective method; ambiguous request bodies bypass caching."""
-    values = {"-X", "--method", "-f", "--raw-field", "-F", "--field",
-              "-H", "--header", "--hostname", "-q", "--jq", "-t", "--template", "-p", "--preview"}
     switches = {"--paginate", "--slurp", "-i", "--include", "--silent", "--verbose"}
     endpoint = None
     method = None
@@ -170,7 +209,7 @@ def _api_is_read(arguments: Sequence[str]) -> bool:
         option, separator, value = token.partition("=")
         if not separator and len(token) > 2 and token[:2] in {"-X", "-f", "-F", "-H", "-q", "-t", "-p"}:
             option, value, separator = token[:2], token[2:], "="
-        if option in values:
+        if option in _API_VALUES:
             if not separator:
                 index += 1
                 if index >= len(arguments):
