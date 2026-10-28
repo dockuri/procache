@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import sqlite3
 import asyncio
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -42,6 +42,64 @@ def test_same_provider_record_is_loaded_once(cache, origin):
     assert first.body == second.body == b'{"id":1}'
     assert not first.cache_hit and second.cache_hit
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('lifetimes', [(15, 15.0), (15.0, 15)])
+def test_equivalent_numeric_lifetimes_share_a_record(tmp_path, lifetimes):
+    path = tmp_path / 'shared.sqlite3'
+    calls = []
+    readers = [CachedHTTPReads(SQLiteResponseCache(path), ttl=ttl) for ttl in lifetimes]
+    def load():
+        calls.append(1)
+        return HTTPResponse(200, {}, b'record')
+    try:
+        first = readers[0].request('GET', 'https://a.test/models', load, scope='one', cacheable=True)
+        second = readers[1].request('GET', 'https://a.test/models', load, scope='one', cacheable=True)
+        assert first.body == second.body == b'record'
+        assert not first.cache_hit and second.cache_hit
+        assert len(calls) == 1
+    finally:
+        for reader in readers:
+            reader.cache.close()
+
+
+def test_distinct_actual_lifetimes_keep_separate_records(tmp_path):
+    path = tmp_path / 'shared.sqlite3'
+    calls = []
+    for lifetime in (15, 30.0):
+        with SQLiteResponseCache(path) as backend:
+            reader = CachedHTTPReads(backend, ttl=lifetime)
+            result = reader.request('GET', 'https://a.test/models',
+                lambda: (calls.append(1) or HTTPResponse(200, {}, b'record')),
+                scope='one', cacheable=True)
+            assert not result.cache_hit
+    assert len(calls) == 2
+
+
+def test_numeric_lifetime_alias_survives_process_restart(tmp_path):
+    code = '''
+import json,sys
+from pathlib import Path
+from procache import SQLiteResponseCache
+from procache.http import CachedHTTPReads,HTTPResponse
+with SQLiteResponseCache(sys.argv[1]) as backend:
+    cache=CachedHTTPReads(backend,ttl=json.loads(sys.argv[3]))
+    def load():
+        with Path(sys.argv[2]).open('a') as output: output.write('load\\n')
+        return HTTPResponse(200,{},b'record')
+    result=cache.request('GET','https://a.test/models',load,scope='one',cacheable=True)
+    print(json.dumps(result.cache_hit))
+'''
+    environment = {**os.environ, 'PYTHONPATH': str(Path(__file__).resolve().parents[1] / 'src'),
+                   'PYTHONDONTWRITEBYTECODE': '1'}
+    hits = []
+    for lifetime in ('15.0', '15'):
+        result = subprocess.run([sys.executable, '-c', code, str(tmp_path / 'shared.sqlite3'),
+                                 str(tmp_path / 'loads'), lifetime], env=environment,
+                                capture_output=True, text=True, timeout=10, check=True)
+        hits.append(json.loads(result.stdout))
+    assert hits == [False, True]
+    assert (tmp_path / 'loads').read_text().splitlines() == ['load']
 
 
 @pytest.mark.parametrize("difference", ["scope", "origin", "parameters", "headers", "method", "url"])
@@ -248,7 +306,7 @@ def test_graphql_errors_and_duplicate_query_fields_are_not_cached(cache):
         calls = []
         for _ in range(2):
             cache.request("POST", "https://a.test/graphql",
-                          lambda: (calls.append(1) or HTTPResponse(200, {}, b'{"errors":[{"message":"failed"}]}')),
+                          lambda calls=calls: (calls.append(1) or HTTPResponse(200, {}, b'{"errors":[{"message":"failed"}]}')),
                           scope="one", cacheable=True, graphql=True, body=body)
         assert len(calls) == 2
 

@@ -7,8 +7,8 @@ request identity are hashed; response bodies still belong in a private cache.
 """
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
 import json
 import math
 import os
@@ -18,8 +18,8 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from urllib.parse import urlsplit
 from typing import Any
+from urllib.parse import urlsplit
 
 from .cache import SQLiteResponseCache
 from .commands import CachedReadCommand
@@ -50,7 +50,9 @@ class CachedHTTPReads:
         if not math.isfinite(ttl) or not 0 < ttl <= 3600:
             raise ValueError("HTTP cache TTL must be finite and between 0 and 3600 seconds")
         self.cache = cache
-        self.ttl = ttl
+        # The validated lifetime is part of the shared identity. Equivalent
+        # int/float arguments must not partition records across API clients.
+        self.ttl = float(ttl)
 
     @classmethod
     def shared(cls, *, path: str | Path | None = None, ttl: float = 15.0) -> CachedHTTPReads:
