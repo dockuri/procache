@@ -191,10 +191,17 @@ def _cacheable_credential(argv: Sequence[str], env: dict[str, str]) -> bool:
             # A URL-shaped endpoint may select a host independently of flags.
             return False
         index += 1
-    host = (host or env.get("GH_HOST") or "github.com").lower()
-    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", host) or host.endswith(".ghe.com"):
+    # gh may choose its sole configured host as the default, so absence of an
+    # explicit hostname or GH_HOST is not proof that the target is github.com.
+    host = host or env.get("GH_HOST")
+    if not host:
         return False
-    return public if host == "github.com" else enterprise
+    host = host.lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", host):
+        return False
+    public_host = (host in {"github.com", "github.localhost"}
+                   or host.endswith((".github.com", ".github.localhost", ".ghe.com")))
+    return public if public_host else enterprise
 
 
 def _api_is_read(arguments: Sequence[str]) -> bool:

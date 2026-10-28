@@ -22,9 +22,10 @@ testing and protected publication of canonical provider caching.
 - [x] AC-02: Unambiguous API requests and requests with both token classes retain safe cache hits.
 - [ ] AC-03: Regression tests, managed governance, protected verification and independent publication pass.
 
-Local regression: five synthetic mixed-host cases fail against the accepted
-base. All 46 command-cache tests pass through the enrolled Wellman runtime on
-Python 3.10 and 3.13; protected full-suite verification remains required.
+Local regression: mixed-host, configured-default-host and hostname-normalization
+cases fail against earlier candidates. All 51 command-cache tests pass through
+the enrolled Wellman runtime on Python 3.10 and 3.13; protected full-suite
+verification remains required.
 
 ## Tracking boundary
 
