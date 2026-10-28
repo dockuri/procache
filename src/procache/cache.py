@@ -236,7 +236,8 @@ class SQLiteResponseCache:
         cached = self.get(key)
         if cached is not None:
             return cached.value, True
-        with self._lock_for(f"{self.namespace}:{key}"):
+        lock_key = SQLiteResponseCache.key("singleflight", str(self.path.resolve()), self.namespace, key)
+        with self._lock_for(lock_key):
             owner = uuid.uuid4().hex
             interval = 0.05
             while True:
