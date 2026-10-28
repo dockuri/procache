@@ -6,13 +6,36 @@ import pytest
 from procache import CachedReadCommand, SQLiteResponseCache
 
 
+@pytest.mark.parametrize('hosts_present', [False, True])
+def test_hidden_credential_changes_do_not_reuse_cached_result(tmp_path, monkeypatch, hosts_present):
+    config = tmp_path / 'gh'
+    config.mkdir()
+    if hosts_present:
+        # A username in hosts.yml does not identify a token held in a keyring.
+        (config / 'hosts.yml').write_text('github.com:\n  user: same-user\n')
+    env = {'GH_CONFIG_DIR': str(config)}
+    replies = iter(['old-permissions', 'new-permissions'])
+    calls = []
+    def execute(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, next(replies), '')
+    monkeypatch.setattr('procache.commands.subprocess.run', execute)
+    runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
+    first = runner.run(['gh', 'api', 'user'], env=env)
+    second = runner.run(['gh', 'api', 'user'], env=env)
+    assert first.stdout == 'old-permissions'
+    assert second.stdout == 'new-permissions'
+    assert not second.cache_hit
+    assert len(calls) == 2
+
+
 @pytest.mark.parametrize('atomic', [False, True])
 def test_same_size_account_rotation_with_preserved_mtime_is_not_a_cache_hit(tmp_path, monkeypatch, atomic):
     config = tmp_path / 'gh'
     config.mkdir()
     hosts = config / 'hosts.yml'
     hosts.write_bytes(b'user: synthetic-a\n')
-    env = {'GH_CONFIG_DIR': str(config)}
+    env = {'GH_CONFIG_DIR': str(config), 'GH_TOKEN': 'test-credential-a'}
     calls = []
     def execute(args, **kwargs):
         calls.append(args)
@@ -87,7 +110,7 @@ def test_replacement_during_identity_read_bypasses_cache(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(args, 0, 'response', '')
     monkeypatch.setattr('procache.commands.subprocess.run', execute)
     runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
-    env = {'GH_CONFIG_DIR': str(tmp_path)}
+    env = {'GH_CONFIG_DIR': str(tmp_path), 'GH_TOKEN': 'test-credential-a'}
     args = ['gh', 'api', 'user']
     assert not runner.run(args, env=env).cache_hit
     assert not runner.run(args, env=env).cache_hit
@@ -112,7 +135,8 @@ def test_unreadable_identity_never_shares_cached_reads(tmp_path, monkeypatch):
     monkeypatch.setattr('procache.commands.subprocess.run', execute)
     runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
     for _ in range(2):
-        assert not runner.run(['gh', 'api', 'user'], env={'GH_CONFIG_DIR': str(tmp_path)}).cache_hit
+        assert not runner.run(['gh', 'api', 'user'], env={'GH_CONFIG_DIR': str(tmp_path),
+                                                          'GH_TOKEN': 'test-credential-a'}).cache_hit
     assert len(calls) == 2
 
 
@@ -141,8 +165,9 @@ def test_command_cache_preserves_result_and_does_not_cache_failures(tmp_path, mo
         return Result()
 
     monkeypatch.setattr("procache.commands.subprocess.run", fake_run)
-    first = runner.run(["gh", "pr", "view", "1"])
-    second = runner.run(["gh", "pr", "view", "1"])
+    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_TOKEN': 'test-credential-a'}
+    first = runner.run(["gh", "pr", "view", "1"], env=env)
+    second = runner.run(["gh", "pr", "view", "1"], env=env)
     assert (first.returncode, first.stdout, first.stderr) == (1, "partial", "provider unavailable")
     assert second.cache_hit is False
     assert calls == 2
@@ -189,8 +214,9 @@ def test_explicit_reads_still_hit_cache(tmp_path, monkeypatch, arguments):
         return subprocess.CompletedProcess(args, 0, '{}', '')
     monkeypatch.setattr('procache.commands.subprocess.run', execute)
     runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
-    assert not runner.run(['gh', 'api', *arguments]).cache_hit
-    assert runner.run(['gh', 'api', *arguments]).cache_hit
+    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_TOKEN': 'test-credential-a'}
+    assert not runner.run(['gh', 'api', *arguments], env=env).cache_hit
+    assert runner.run(['gh', 'api', *arguments], env=env).cache_hit
     assert len(calls) == 1
 
 

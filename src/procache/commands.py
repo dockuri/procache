@@ -51,6 +51,11 @@ class CachedReadCommand:
         if not self.is_read(argv):
             return self._execute(argv, timeout=timeout, env=env)
         effective_env = os.environ if env is None else env
+        # gh can keep its effective token in the system credential store,
+        # independently of hosts.yml. A username or unchanged config file is
+        # therefore not enough to identify that credential across requests.
+        if not any(effective_env.get(name) for name in _TOKEN_ENVIRONMENT):
+            return self._execute(argv, timeout=timeout, env=env)
         scope = tuple(
             (name, effective_env.get(name, ""))
             for name in ("GH_HOST", "GH_REPO", "GH_CONFIG_DIR")
@@ -99,6 +104,7 @@ class CachedReadCommand:
 
 
 _FINGERPRINT_LIMIT = 16
+_TOKEN_ENVIRONMENT = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
 _fingerprints: OrderedDict[Path, tuple[tuple[int, ...], str]] = OrderedDict()
 _fingerprint_lock = threading.Lock()
 
@@ -142,9 +148,7 @@ def _github_config_fingerprint(path: Path) -> str:
 
 def _credential_scope(env: dict[str, str]) -> str:
     """Hash identity inputs; credentials never become persisted cache metadata."""
-    tokens = tuple(env.get(name, "") for name in (
-        "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-    ))
+    tokens = tuple(env.get(name, "") for name in _TOKEN_ENVIRONMENT)
     config = Path(env.get("GH_CONFIG_DIR") or
                   str(Path(env.get("XDG_CONFIG_HOME") or
                            str(Path(env.get("HOME") or str(Path.home())) / ".config")) / "gh"))
