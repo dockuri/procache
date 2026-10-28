@@ -1,3 +1,5 @@
+import gc
+import os
 import threading
 import time
 from multiprocessing import get_context
@@ -5,6 +7,129 @@ from multiprocessing import get_context
 import pytest
 
 from procache import ProviderCooldownError, SQLiteResponseCache, is_rate_limit_error
+
+
+def test_connection_reuse_close_and_reopen(tmp_path, monkeypatch):
+    import sqlite3
+    original = sqlite3.connect
+    opened = []
+    def connect(*args, **kwargs):
+        connection = original(*args, **kwargs)
+        opened.append(connection)
+        return connection
+    monkeypatch.setattr(sqlite3, 'connect', connect)
+    cache = SQLiteResponseCache(tmp_path / 'reused.sqlite3')
+    cache.put('key', b'value', ttl=60)
+    assert cache.get('key').value == b'value'
+    assert len(opened) == 1
+    cache.close()
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute('SELECT 1')
+    assert cache.get('key').value == b'value'
+    assert len(opened) == 2
+    cache.close()
+    cache.close()
+
+
+def test_connection_context_closes_after_failure_and_preserves_default_durability(tmp_path):
+    import sqlite3
+    cache = SQLiteResponseCache(tmp_path / 'context.sqlite3')
+    with pytest.raises(RuntimeError), cache:
+        connection = cache._connect()
+        assert connection.execute('PRAGMA synchronous').fetchone()[0] == 2
+        raise RuntimeError('consumer failed')
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute('SELECT 1')
+    cache.put('key', b'value', ttl=60)
+    assert cache.get('key').value == b'value'
+    cache.close()
+
+
+def test_reused_connections_are_thread_local(tmp_path):
+    cache = SQLiteResponseCache(tmp_path / 'threads.sqlite3')
+    parent = cache._connect()
+    observed = []
+    def work():
+        connection = cache._connect()
+        assert connection is cache._connect()
+        cache.put('worker', b'value', ttl=60)
+        observed.append(connection)
+        cache.close()
+    worker = threading.Thread(target=work)
+    worker.start()
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+    assert len(observed) == 1 and observed[0] is not parent
+    assert cache._connect() is parent
+    assert cache.get('worker').value == b'value'
+    cache.close()
+
+
+def _inherited_connection_worker(cache, inherited, results):
+    connection = cache._connect()
+    results.put((os.getpid(), connection is inherited, cache.get('key').value))
+    cache.close()
+
+
+def test_fork_refreshes_inherited_connection(tmp_path):
+    cache = SQLiteResponseCache(tmp_path / 'fork.sqlite3')
+    cache.put('key', b'value', ttl=60)
+    inherited = cache._connect()
+    context = get_context('fork')
+    results = context.Queue()
+    worker = context.Process(target=_inherited_connection_worker, args=(cache, inherited, results))
+    worker.start()
+    pid, reused, value = results.get(timeout=10)
+    worker.join(timeout=10)
+    assert worker.exitcode == 0 and pid != os.getpid()
+    assert not reused and value == b'value'
+    assert cache._connect() is inherited
+    cache.close()
+
+
+def test_completed_unique_reads_do_not_retain_synchronization_locks(tmp_path):
+    cache = SQLiteResponseCache(tmp_path / 'bounded-locks.sqlite3')
+    before = len(cache._locks)
+    for index in range(100):
+        assert cache.get_or_set(str(index), lambda: b'value', ttl=60)[0] == b'value'
+    gc.collect()
+    assert len(cache._locks) <= before
+
+
+def test_handed_off_procache_alias_preserves_canonical_class():
+    from procache import ProCache
+    from procache.cache import ProCache as BackendAlias
+
+    assert ProCache is SQLiteResponseCache
+    assert BackendAlias is ProCache
+
+
+def test_transient_busy_during_wal_setup_is_retried():
+    import sqlite3
+    class FirstOpen:
+        calls = 0
+        def execute(self, statement):
+            assert statement == 'PRAGMA journal_mode=WAL'
+            self.calls += 1
+            if self.calls == 1:
+                raise sqlite3.OperationalError('database is locked')
+    connection = FirstOpen()
+    SQLiteResponseCache._enable_wal(connection)
+    assert connection.calls == 2
+
+
+@pytest.mark.parametrize('message,timeout', [('database is locked', 0), ('disk I/O error', 30)])
+def test_wal_setup_does_not_hide_persistent_lock_or_storage_errors(message, timeout):
+    import sqlite3
+    class Broken:
+        calls = 0
+        def execute(self, statement):
+            self.calls += 1
+            raise sqlite3.OperationalError(message)
+    connection = Broken()
+    with pytest.raises(sqlite3.OperationalError, match=message):
+        SQLiteResponseCache._enable_wal(connection, timeout=timeout)
+    assert connection.calls == 1
 
 
 @pytest.mark.parametrize("message", [

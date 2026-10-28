@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -11,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
+from weakref import WeakValueDictionary
 
 
 @dataclass(frozen=True)
@@ -77,7 +79,7 @@ class SQLiteResponseCache:
     # Longest pause between checks while another process loads the same key.
     MAX_WAIT_INTERVAL = 0.5
 
-    _locks: ClassVar[dict[str, threading.Lock]] = {}
+    _locks: ClassVar[WeakValueDictionary[str, threading.Lock]] = WeakValueDictionary()
     _locks_guard = threading.Lock()
 
     def __init__(
@@ -91,6 +93,7 @@ class SQLiteResponseCache:
         self.namespace = namespace
         self._clock = time.time if clock is None else clock
         self._writes = 0
+        self._local = threading.local()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
             db.execute("""
@@ -125,13 +128,53 @@ class SQLiteResponseCache:
             """)
 
     def _connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(self.path, timeout=30, isolation_level="IMMEDIATE")
-        db.execute("PRAGMA busy_timeout=30000")
-        db.execute("PRAGMA journal_mode=WAL")
+        pid = os.getpid()
+        db = getattr(self._local, "connection", None)
+        if db is None or getattr(self._local, "pid", None) != pid:
+            db = sqlite3.connect(self.path, timeout=30, isolation_level="IMMEDIATE")
+            try:
+                db.execute("PRAGMA busy_timeout=30000")
+                self._enable_wal(db)
+            except BaseException:
+                db.close()
+                raise
+            self._local.connection = db
+            self._local.pid = pid
         return db
+
+    @staticmethod
+    def _enable_wal(db: sqlite3.Connection, *, timeout: float = 30.0) -> None:
+        # Concurrent first open can return SQLITE_BUSY from the mode change
+        # without honoring busy_timeout. Keep retries within the same bound.
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                db.execute("PRAGMA journal_mode=WAL")
+                return
+            except sqlite3.OperationalError as error:
+                remaining = deadline - time.monotonic()
+                if str(error) not in {"database is locked", "database table is locked"} or remaining <= 0:
+                    raise
+                time.sleep(min(0.01, remaining))
+
+    def close(self) -> None:
+        """Close this instance's connection in the current thread only."""
+        db = getattr(self._local, "connection", None)
+        self._local.connection = None
+        self._local.pid = None
+        if db is not None:
+            db.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
 
     @classmethod
     def _lock_for(cls, key: str) -> threading.Lock:
+        # Holders and waiters retain strong references. Completed one-use keys
+        # disappear once nobody can still acquire that lock.
         with cls._locks_guard:
             return cls._locks.setdefault(key, threading.Lock())
 
@@ -305,3 +348,6 @@ class SQLiteResponseCache:
             db.execute("DELETE FROM responses WHERE namespace=?", (self.namespace,))
             db.execute("DELETE FROM cooldowns WHERE namespace=?", (self.namespace,))
             db.execute("DELETE FROM flights WHERE namespace=?", (self.namespace,))
+
+
+ProCache = SQLiteResponseCache

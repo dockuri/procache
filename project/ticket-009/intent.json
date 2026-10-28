@@ -1,0 +1,115 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-009",
+  "summary": "Bound cache resources and safely reuse SQLite connections and credential fingerprints",
+  "workstream": "application",
+  "classification": {
+    "kind": "FEATURE",
+    "priority": "P1",
+    "origin": "requested"
+  },
+  "allowedPaths": [
+    "project/ticket-009/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    "src/procache/__init__.py",
+    "src/procache/cache.py",
+    "src/procache/commands.py",
+    "tests/test_cache.py",
+    "tests/test_commands.py"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "7fe316c9b0ac45d9747ddf90afc7c7969084cbb1",
+    "targetBranch": "main",
+    "outcome": "Publish the user-handed-off 770343a cache performance work with bounded synchronization resources and credential-rotation correctness, preserving canonical HTTP caching.",
+    "nonGoals": [
+      "No dependency or governance changes, Rust extension, credential values, production runtime deployment or discarded history."
+    ],
+    "complexity": "S",
+    "estimatedMinutes": 75,
+    "budgets": {
+      "maxImplementationFiles": 5,
+      "maxAffectedComponents": 2,
+      "maxPublicInterfaceChanges": 1,
+      "maxRuntimeDependencies": 0
+    },
+    "architecture": {
+      "status": "accepted",
+      "decision": "Reuse one SQLite connection per cache instance/thread/PID with explicit close; retain SQLite durability defaults. Weakly retain only live single-flight locks. Cache only bounded credential fingerprints keyed by file identity and metadata with stable-read verification. Preserve ProCache alias from handed-off commit.",
+      "components": [
+        {
+          "name": "canonical-cache",
+          "paths": [
+            "src/procache/cache.py",
+            "src/procache/commands.py",
+            "src/procache/__init__.py"
+          ]
+        },
+        {
+          "name": "regressions",
+          "paths": [
+            "tests/test_cache.py",
+            "tests/test_commands.py"
+          ]
+        }
+      ],
+      "responsibilityChanges": false,
+      "interfaceChanges": [
+        "Add ProCache alias and explicit current-thread connection lifecycle."
+      ],
+      "dataChanges": [],
+      "ui": {
+        "impact": "none",
+        "states": [],
+        "evidence": []
+      },
+      "rollback": "Protected revert; original commit remains in local annotated recovery tag and verified full-history bundle."
+    },
+    "runtimeDependencies": [],
+    "validation": [
+      {
+        "criterion": "AC-01",
+        "commands": [
+          "python -m pytest -q tests",
+          "python -m ruff check src tests",
+          "./project/governance-check.sh"
+        ],
+        "evidence": "Connections are reused, isolated by thread and refreshed after fork; closing and reopen preserve persistence."
+      },
+      {
+        "criterion": "AC-02",
+        "commands": [
+          "python -m pytest -q tests",
+          "python -m ruff check src tests",
+          "./project/governance-check.sh"
+        ],
+        "evidence": "Single-flight remains correct under real contention without retaining locks for past unique keys."
+      },
+      {
+        "criterion": "AC-03",
+        "commands": [
+          "python -m pytest -q tests",
+          "python -m ruff check src tests",
+          "./project/governance-check.sh"
+        ],
+        "evidence": "Unchanged configuration avoids repeated reads; atomic replacement, same-size rewrite and missing/unreadable/racing configuration cannot reuse an incorrect account."
+      },
+      {
+        "criterion": "AC-04",
+        "commands": [
+          "python -m pytest -q tests",
+          "python -m ruff check src tests",
+          "./project/governance-check.sh"
+        ],
+        "evidence": "All regressions and governance pass; independent exact-head protected publication succeeds."
+      }
+    ]
+  }
+}
