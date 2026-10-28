@@ -1,0 +1,76 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-011",
+  "summary": "Isolate singleflight locks between independent cache databases",
+  "workstream": "application",
+  "classification": {
+    "kind": "FEATURE",
+    "priority": "P1",
+    "origin": "requested"
+  },
+  "allowedPaths": [
+    "project/ticket-011/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    "src/procache/cache.py",
+    "tests/test_cache.py"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "c70037dd49a84096faa2a972158fb6145cb4b0a2",
+    "targetBranch": "main",
+    "outcome": "Allow independent project cache databases and distinct namespace/key pairs to load concurrently while preserving singleflight for the same stored record. Publish through protected local verification and independent approval.",
+    "nonGoals": [
+      "No persisted cache identity, database schema, TTL, provider policy, API, dependency or credential changes.",
+      "Do not change protected validation/review policy or bypass unavailable required review."
+    ],
+    "complexity": "S",
+    "estimatedMinutes": 45,
+    "budgets": {
+      "maxImplementationFiles": 2,
+      "maxAffectedComponents": 1,
+      "maxPublicInterfaceChanges": 0,
+      "maxRuntimeDependencies": 0
+    },
+    "architecture": {
+      "status": "accepted",
+      "decision": "Scope ephemeral thread locks to the resolved SQLite database path plus an unambiguous namespace/key identity. Retain canonical SQLite flights and all persisted response keys; independent cache stores must not block each other behind an unrelated loader.",
+      "components": [
+        {
+          "name": "cache-singleflight",
+          "paths": [
+            "src/procache/cache.py",
+            "tests/test_cache.py"
+          ]
+        }
+      ],
+      "responsibilityChanges": false,
+      "interfaceChanges": [],
+      "dataChanges": [],
+      "ui": {
+        "impact": "none",
+        "states": [],
+        "evidence": []
+      },
+      "rollback": "Protected source revert; cached data and SQLite schema remain compatible."
+    },
+    "runtimeDependencies": [],
+    "validation": [
+      {
+        "criterion": "AC-01",
+        "commands": [
+          "python -m pytest -q tests/test_cache.py",
+          "python -m pytest -q",
+          "project/governance-check.sh"
+        ],
+        "evidence": "Event-coordinated different-database and namespace/key collision regressions, same-database coalescing, supported Python 3.10/3.13 tests and protected exact-head publication."
+      }
+    ]
+  }
+}

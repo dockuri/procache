@@ -2,6 +2,7 @@ import gc
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import get_context
 
 import pytest
@@ -202,6 +203,80 @@ def test_same_key_load_is_coalesced(tmp_path):
         thread.join()
     assert calls == 1
     assert all(value == b"ok" for value, _ in results)
+
+
+@pytest.mark.parametrize("separation", ["database", "namespace-key"])
+def test_unrelated_records_load_while_another_loader_is_held(tmp_path, separation):
+    if separation == "database":
+        first = SQLiteResponseCache(tmp_path / "first.sqlite3", namespace="projects")
+        second = SQLiteResponseCache(tmp_path / "second.sqlite3", namespace="projects")
+        first_key = second_key = "catalog"
+    else:
+        first = SQLiteResponseCache(tmp_path / "shared.sqlite3", namespace="a:b")
+        second = SQLiteResponseCache(tmp_path / "shared.sqlite3", namespace="a")
+        first_key, second_key = "c", "b:c"
+    entered = threading.Event()
+    release = threading.Event()
+    second_loaded = threading.Event()
+
+    def load_first():
+        entered.set()
+        assert release.wait(timeout=10)
+        return b"first"
+
+    def load_second():
+        second_loaded.set()
+        return b"second"
+
+    def run(cache, key, loader):
+        try:
+            return cache.get_or_set(key, loader, ttl=60)
+        finally:
+            cache.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_result = pool.submit(run, first, first_key, load_first)
+            try:
+                assert entered.wait(timeout=5)
+                second_result = pool.submit(run, second, second_key, load_second)
+                independent = second_loaded.wait(timeout=5)
+            finally:
+                release.set()
+            results = [first_result.result(timeout=10), second_result.result(timeout=10)]
+    finally:
+        first.close()
+        second.close()
+    assert independent, "an unrelated cache record waited for the held loader"
+    assert results == [(b"first", False), (b"second", False)]
+
+
+def test_equivalent_database_paths_still_coalesce_between_instances(tmp_path):
+    first = SQLiteResponseCache(tmp_path / "same.sqlite3")
+    second = SQLiteResponseCache(tmp_path / "alias" / ".." / "same.sqlite3")
+    calls = []
+    started = threading.Barrier(2)
+
+    def loader():
+        calls.append("load")
+        return b"shared"
+
+    def run(cache):
+        try:
+            started.wait(timeout=5)
+            return cache.get_or_set("record", loader, ttl=60)
+        finally:
+            cache.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(run, cache) for cache in (first, second)]
+            results = [future.result(timeout=10) for future in futures]
+    finally:
+        first.close()
+        second.close()
+    assert calls == ["load"]
+    assert sorted(results) == [(b"shared", False), (b"shared", True)]
 
 
 def test_rate_limit_cooldown_is_shared_and_blocks_loader(tmp_path):
