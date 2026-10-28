@@ -1,0 +1,89 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-010",
+  "summary": "Share equivalent numeric TTL cache keys across provider clients",
+  "workstream": "application",
+  "classification": {
+    "kind": "BUG",
+    "priority": "P1",
+    "origin": "requested"
+  },
+  "allowedPaths": [
+    "project/ticket-010/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    "src/procache/http.py",
+    "tests/test_http.py"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "9fc294920fb44855b0c1767207e3bf919bb7cb39",
+    "targetBranch": "main",
+    "outcome": "Make equivalent numeric TTLs share the same canonical provider HTTP cache identity, independently publish the fix and qualify its already authorized proxy11435 runtime promotion.",
+    "nonGoals": [
+      "No new cache backends, dependencies, authorization behavior, provider transport, inference caching or consumer repository changes."
+    ],
+    "complexity": "S",
+    "estimatedMinutes": 25,
+    "budgets": {
+      "maxImplementationFiles": 2,
+      "maxAffectedComponents": 2,
+      "maxPublicInterfaceChanges": 0,
+      "maxRuntimeDependencies": 0
+    },
+    "architecture": {
+      "status": "accepted",
+      "decision": "Normalize validated HTTP cache TTL to float once at construction, retaining the existing identity for distinct actual lifetimes and all current account/origin/header/request guards. No persisted records are moved or rewritten; older integer-TTL entries expire by the existing TTL policy.",
+      "components": [
+        {
+          "name": "canonical HTTP identity",
+          "paths": [
+            "src/procache/http.py",
+            "tests/test_http.py"
+          ]
+        }
+      ],
+      "responsibilityChanges": false,
+      "interfaceChanges": [],
+      "dataChanges": [],
+      "ui": {
+        "impact": "none",
+        "states": [],
+        "evidence": []
+      },
+      "rollback": "Protected source revert and restore previous immutable proxy runtime; retain the private credentials file and previous release unchanged."
+    },
+    "runtimeDependencies": [],
+    "validation": [
+      {
+        "criterion": "AC-01",
+        "commands": [
+          "python -m pytest -q tests/test_http.py"
+        ],
+        "evidence": "Integer/floating TTL aliases reuse a cached result, including independent process restarts."
+      },
+      {
+        "criterion": "AC-02",
+        "commands": [
+          "python -m pytest -q tests"
+        ],
+        "evidence": "Distinct TTLs remain separate; all account/origin, invalidation and freshness regressions pass."
+      },
+      {
+        "criterion": "AC-03",
+        "commands": [
+          "project/governance-check.sh",
+          "protected OneDev and Validator",
+          "qualified proxy runtime activation"
+        ],
+        "evidence": "Exact-head independent merge, real upstream catalog qualification and production cross-process integer-TTL cache hit."
+      }
+    ]
+  }
+}
