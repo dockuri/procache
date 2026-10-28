@@ -1,0 +1,46 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-013",
+  "summary": "Bind command cache credentials to the selected GitHub host",
+  "workstream": "application",
+  "classification": {
+    "kind": "BUG",
+    "priority": "P1",
+    "origin": "health"
+  },
+  "allowedPaths": [
+    "project/ticket-013/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    "src/procache/commands.py",
+    "tests/test_commands.py"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "4cd835000b6b8277aabeeb63ced198f3dcbb0ef9",
+    "targetBranch": "main",
+    "outcome": "Prevent reuse of cached GitHub command results when only an unrelated host's explicit token is known, retaining safe cache hits and protected publication.",
+    "nonGoals": ["Do not access the system credential store, change provider transport, add dependencies, or alter the persistent cache schema."],
+    "complexity": "S",
+    "estimatedMinutes": 60,
+    "budgets": {"maxImplementationFiles": 2, "maxAffectedComponents": 1, "maxPublicInterfaceChanges": 0, "maxRuntimeDependencies": 0},
+    "architecture": {
+      "status": "accepted",
+      "decision": "Select only explicit tokens appropriate for a known API host; when the host cannot be determined with certainty, cache only when both token classes are explicit.",
+      "components": [{"name": "command cache credential eligibility", "paths": ["src/procache/commands.py", "tests/test_commands.py"]}],
+      "responsibilityChanges": false,
+      "interfaceChanges": [],
+      "dataChanges": [],
+      "ui": {"impact": "none", "states": [], "evidence": []},
+      "rollback": "Protected revert; cache schema and existing response identities remain unchanged."
+    },
+    "runtimeDependencies": [],
+    "validation": [{"criterion": "AC-01", "commands": ["python -m pytest -q tests/test_commands.py", "project/governance-check.sh"], "evidence": "Synthetic mixed-host credential rotation bypasses cache, while safe explicit token requests still hit and rotate correctly."}]
+  }
+}

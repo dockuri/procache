@@ -6,6 +6,75 @@ import pytest
 from procache import CachedReadCommand, SQLiteResponseCache
 
 
+@pytest.mark.parametrize(('args', 'env'), [
+    (['gh', 'api', 'user'], {'GH_HOST': 'enterprise.example', 'GH_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'user', '--hostname', 'enterprise.example'], {'GH_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'user', '--hostname=github.com'], {'GH_ENTERPRISE_TOKEN': 'test-credential-a'}),
+    (['gh', 'pr', 'view', '1'], {'GH_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'repos/{owner}/{repo}'], {'GH_TOKEN': 'test-credential-a',
+                                              'GH_REPO': 'enterprise.example/owner/repo'}),
+    (['gh', 'api', 'https://enterprise.example/user'], {'GH_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'user', '--hostname', 'github.com', '--hostname', 'enterprise.example'],
+     {'GH_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'user'], {'GH_HOST': 'company.ghe.com', 'GH_ENTERPRISE_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'user'], {'GH_HOST': 'github.localhost', 'GH_ENTERPRISE_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'user', '--hostname', 'api.github.com'], {'GH_ENTERPRISE_TOKEN': 'test-credential-a'}),
+])
+def test_unrelated_token_or_unknown_host_never_reuses_cached_result(tmp_path, monkeypatch, args, env):
+    env = {**env, 'GH_CONFIG_DIR': str(tmp_path / 'gh')}
+    replies = iter(['old-permissions', 'new-permissions'])
+    calls = []
+    def execute(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, next(replies), '')
+    monkeypatch.setattr('procache.commands.subprocess.run', execute)
+    runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
+    assert runner.run(args, env=env).stdout == 'old-permissions'
+    second = runner.run(args, env=env)
+    assert second.stdout == 'new-permissions' and not second.cache_hit
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(('args', 'env'), [
+    (['gh', 'api', 'user'], {'GH_HOST': 'github.com', 'GH_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'user'], {'GH_HOST': 'enterprise.example', 'GH_ENTERPRISE_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'user', '--hostname', 'enterprise.example'], {'GH_ENTERPRISE_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'user'], {'GH_HOST': 'company.ghe.com', 'GH_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'user'], {'GH_HOST': 'github.localhost', 'GH_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'user', '--hostname', 'github.com'],
+     {'GH_HOST': 'enterprise.example', 'GH_TOKEN': 'test-credential-a'}),
+    (['gh', 'api', 'user', '-H', '--hostname=enterprise.example'],
+     {'GH_HOST': 'github.com', 'GH_TOKEN': 'test-credential-a'}),
+    (['gh', 'pr', 'view', '1'], {'GH_TOKEN': 'test-credential-a', 'GH_ENTERPRISE_TOKEN': 'test-credential-b'}),
+])
+def test_known_host_with_matching_token_or_both_tokens_still_caches(tmp_path, monkeypatch, args, env):
+    env = {**env, 'GH_CONFIG_DIR': str(tmp_path / 'gh')}
+    calls = []
+    def execute(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, 'response', '')
+    monkeypatch.setattr('procache.commands.subprocess.run', execute)
+    runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
+    assert not runner.run(args, env=env).cache_hit
+    assert runner.run(args, env=env).cache_hit
+    assert len(calls) == 1
+
+
+def test_configured_default_host_without_explicit_host_does_not_reuse(tmp_path, monkeypatch):
+    config = tmp_path / 'gh'
+    config.mkdir()
+    (config / 'hosts.yml').write_text('enterprise.example:\n  user: same-user\n')
+    env = {'GH_CONFIG_DIR': str(config), 'GH_TOKEN': 'test-credential-a'}
+    replies = iter(['old-permissions', 'new-permissions'])
+    def execute(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, next(replies), '')
+    monkeypatch.setattr('procache.commands.subprocess.run', execute)
+    runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
+    assert runner.run(['gh', 'api', 'user'], env=env).stdout == 'old-permissions'
+    second = runner.run(['gh', 'api', 'user'], env=env)
+    assert second.stdout == 'new-permissions' and not second.cache_hit
+
+
 @pytest.mark.parametrize('hosts_present', [False, True])
 def test_hidden_credential_changes_do_not_reuse_cached_result(tmp_path, monkeypatch, hosts_present):
     config = tmp_path / 'gh'
@@ -35,7 +104,7 @@ def test_same_size_account_rotation_with_preserved_mtime_is_not_a_cache_hit(tmp_
     config.mkdir()
     hosts = config / 'hosts.yml'
     hosts.write_bytes(b'user: synthetic-a\n')
-    env = {'GH_CONFIG_DIR': str(config), 'GH_TOKEN': 'test-credential-a'}
+    env = {'GH_CONFIG_DIR': str(config), 'GH_HOST': 'github.com', 'GH_TOKEN': 'test-credential-a'}
     calls = []
     def execute(args, **kwargs):
         calls.append(args)
@@ -110,7 +179,7 @@ def test_replacement_during_identity_read_bypasses_cache(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(args, 0, 'response', '')
     monkeypatch.setattr('procache.commands.subprocess.run', execute)
     runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
-    env = {'GH_CONFIG_DIR': str(tmp_path), 'GH_TOKEN': 'test-credential-a'}
+    env = {'GH_CONFIG_DIR': str(tmp_path), 'GH_HOST': 'github.com', 'GH_TOKEN': 'test-credential-a'}
     args = ['gh', 'api', 'user']
     assert not runner.run(args, env=env).cache_hit
     assert not runner.run(args, env=env).cache_hit
@@ -135,7 +204,7 @@ def test_unreadable_identity_never_shares_cached_reads(tmp_path, monkeypatch):
     monkeypatch.setattr('procache.commands.subprocess.run', execute)
     runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
     for _ in range(2):
-        assert not runner.run(['gh', 'api', 'user'], env={'GH_CONFIG_DIR': str(tmp_path),
+        assert not runner.run(['gh', 'api', 'user'], env={'GH_CONFIG_DIR': str(tmp_path), 'GH_HOST': 'github.com',
                                                           'GH_TOKEN': 'test-credential-a'}).cache_hit
     assert len(calls) == 2
 
@@ -214,7 +283,7 @@ def test_explicit_reads_still_hit_cache(tmp_path, monkeypatch, arguments):
         return subprocess.CompletedProcess(args, 0, '{}', '')
     monkeypatch.setattr('procache.commands.subprocess.run', execute)
     runner = CachedReadCommand(SQLiteResponseCache(tmp_path / 'cache.sqlite3'))
-    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_TOKEN': 'test-credential-a'}
+    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_HOST': 'github.com', 'GH_TOKEN': 'test-credential-a'}
     assert not runner.run(['gh', 'api', *arguments], env=env).cache_hit
     assert runner.run(['gh', 'api', *arguments], env=env).cache_hit
     assert len(calls) == 1
@@ -228,7 +297,7 @@ def test_credentials_config_and_repository_context_partition_cache(tmp_path, mon
         calls.append(args)
         return subprocess.CompletedProcess(args, 0, str(len(calls)), '')
     monkeypatch.setattr('procache.commands.subprocess.run', execute)
-    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_TOKEN': 'test-credential-a'}
+    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_HOST': 'github.com', 'GH_TOKEN': 'test-credential-a'}
     args = ['gh', 'api', 'user']
     first = runner.run(args, env=env)
     assert runner.run(args, env=env).stdout == first.stdout
@@ -255,7 +324,7 @@ def test_textual_403_stops_further_commands_for_same_identity(tmp_path, monkeypa
     cache = SQLiteResponseCache(tmp_path / 'cache.sqlite3')
     first = CachedReadCommand(cache)
     second = CachedReadCommand(cache)
-    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_TOKEN': 'test-credential-a'}
+    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_HOST': 'github.com', 'GH_TOKEN': 'test-credential-a'}
     assert first.run(['gh', 'api', 'user'], env=env).returncode == 1
     assert second.run(['gh', 'api', 'repos/acme/demo'], env=env).returncode == 75
     assert len(calls) == 1
