@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from .cache import SQLiteResponseCache
 from .commands import CachedReadCommand
+from .urtlog_bridge import maybe_emit_http_read
 
 
 @dataclass(frozen=True)
@@ -226,7 +227,10 @@ class CachedHTTPReads:
                              method, url, request_headers, parameters, body, self.ttl)
         cached = self.cache.get(key)
         if cached is not None:
-            return self._decode(cached.value, True)
+            response = self._decode(cached.value, True)
+            if os.environ.get("URTLOG_STATE_DIR"):
+                maybe_emit_http_read(method, url, response.status, cache_hit=True)
+            return response
 
         explicit_conditions = {"range", "if-range", "if-match", "if-none-match",
                                "if-modified-since", "if-unmodified-since"}
@@ -289,7 +293,10 @@ class CachedHTTPReads:
         value, hit = self.cache.get_or_set(
             key, load, ttl=self.ttl, should_cache=lambda _: False, cooldown_key=authority,
         )
-        return self._decode(value, hit)
+        response = self._decode(value, hit)
+        if os.environ.get("URTLOG_STATE_DIR"):
+            maybe_emit_http_read(method, url, response.status, cache_hit=hit)
+        return response
 
     async def arequest(
         self, method: str, url: str, loader: Callable[[], Awaitable[HTTPResponse]], *,
