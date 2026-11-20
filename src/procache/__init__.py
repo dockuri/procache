@@ -1,7 +1,7 @@
 """Small, provider-neutral cache for safe read-side API calls."""
 
 from .cache import CacheEntry, ProCache, ProviderCooldownError, SQLiteResponseCache, is_rate_limit_error
-from .commands import CachedCommandResult, CachedReadCommand
+from .commands import CachedCommandResult, CachedReadCommand, github_env
 from .pygithub import CachedPyGithubRequester
 
 __all__ = [
@@ -12,5 +12,6 @@ __all__ = [
     "ProCache",
     "ProviderCooldownError",
     "SQLiteResponseCache",
+    "github_env",
     "is_rate_limit_error",
 ]
