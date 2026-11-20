@@ -65,7 +65,12 @@ class CachedReadCommand:
         except OSError:
             # If identity cannot be established, execute once without sharing.
             return self._execute(argv, timeout=timeout, env=env)
-        key = self.cache.key("command-v2", argv, "scope", scope, os.getcwd(), identity)
+        # With an explicit host and repository the working directory cannot
+        # change the result, so services in different directories share it.
+        # Other reads stay partitioned by the repository context of the cwd.
+        explicit = argv[1] != "api" and _explicit_host_repository_read(argv, effective_env, True, True)
+        context = "explicit-repository" if explicit else os.getcwd()
+        key = self.cache.key("command-v2", argv, "scope", scope, context, identity)
         cooldown_key = self.cache.key("provider-v2", effective_env.get("GH_HOST", "github.com"), identity)
         def load() -> bytes:
             result = self._execute(argv, timeout=timeout, env=env)
@@ -163,8 +168,10 @@ def _cacheable_credential(argv: Sequence[str], env: dict[str, str]) -> bool:
     enterprise = bool(env.get("GH_ENTERPRISE_TOKEN") or env.get("GITHUB_ENTERPRISE_TOKEN"))
     if public and enterprise:
         return True
-    if not (public or enterprise) or len(argv) < 2 or argv[1] != "api":
+    if not (public or enterprise) or len(argv) < 2:
         return False
+    if argv[1] != "api":
+        return _explicit_host_repository_read(argv, env, public, enterprise)
     # A host-qualified repository can affect host selection. Avoid guessing how
     # it interacts with gh's repository context when only one token is known.
     if str(env.get("GH_REPO", "")).count("/") >= 2:
@@ -197,11 +204,107 @@ def _cacheable_credential(argv: Sequence[str], env: dict[str, str]) -> bool:
     if not host:
         return False
     host = host.lower()
-    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", host):
+    if not _valid_host(host):
         return False
-    public_host = (host in {"github.com", "github.localhost"}
-                   or host.endswith((".github.com", ".github.localhost", ".ghe.com")))
-    return public if public_host else enterprise
+    return public if _public_host(host) else enterprise
+
+
+_HOST_PATTERN = re.compile(r"[a-z0-9][a-z0-9.-]*")
+_REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+_REPOSITORY_OPTIONS = {"--repo", "-R"}
+
+
+def _valid_host(host: str) -> bool:
+    return bool(_HOST_PATTERN.fullmatch(host))
+
+
+def _public_host(host: str) -> bool:
+    return (host in {"github.com", "github.localhost"}
+            or host.endswith((".github.com", ".github.localhost", ".ghe.com")))
+
+
+def _explicit_host_repository_read(
+    argv: Sequence[str], env: dict[str, str], public: bool, enterprise: bool
+) -> bool:
+    """Admit non-API reads only when GH_HOST alone selects the host.
+
+    ``gh pr``/``gh issue`` resolve the host from the repository context, so the
+    repository must be explicit (``--repo``/``-R`` or ``GH_REPO``) and must not
+    carry a host or URL. ``gh search`` has no repository context and is only
+    admitted for github.com. Anything ambiguous keeps bypassing the cache.
+    """
+    host = str(env.get("GH_HOST", "")).lower()
+    if not host or not _valid_host(host):
+        return False
+    if any(re.match(r"(?i)^https?://", str(token)) for token in argv[2:]):
+        return False
+    env_repository = str(env.get("GH_REPO", ""))
+    if env_repository and not _REPOSITORY_PATTERN.fullmatch(env_repository):
+        return False
+    if argv[1] == "search":
+        if host != "github.com":
+            return False
+    elif argv[1] in {"pr", "issue"}:
+        repositories = []
+        arguments = list(argv[2:])
+        for index, token in enumerate(arguments):
+            if token in _REPOSITORY_OPTIONS:
+                if index + 1 >= len(arguments):
+                    return False
+                repositories.append(arguments[index + 1])
+            elif token.startswith("--repo="):
+                repositories.append(token.partition("=")[2])
+            elif token.startswith("-R") and len(token) > 2:
+                repositories.append(token[2:])
+        if len(repositories) > 1:
+            return False
+        repository = repositories[0] if repositories else env_repository
+        if not repository or not _REPOSITORY_PATTERN.fullmatch(repository):
+            return False
+    else:
+        return False
+    return public if _public_host(host) else enterprise
+
+
+def github_env(
+    host: str = "github.com",
+    env: dict[str, str] | None = None,
+    *,
+    runner=subprocess.run,
+    timeout: float = 10.0,
+) -> dict[str, str]:
+    """Return a child environment that makes the GitHub identity explicit.
+
+    GitHub CLI may keep its token in the system keyring, which procache cannot
+    fingerprint, so such reads are never shared. This helper pins ``GH_HOST``
+    and copies the token ``gh`` would use for that host into the returned
+    environment, read locally with ``gh auth token`` (no network request). The
+    token only lives in the returned mapping; the cache stores a hash of it.
+    If resolution fails the mapping carries no resolved token and
+    ``CachedReadCommand`` keeps bypassing the cache.
+    """
+    host = str(host).lower()
+    if not _valid_host(host):
+        raise ValueError("invalid GitHub host")
+    result = dict(os.environ if env is None else env)
+    result["GH_HOST"] = host
+    if _public_host(host):
+        variable, existing = "GH_TOKEN", ("GH_TOKEN", "GITHUB_TOKEN")
+    else:
+        variable, existing = "GH_ENTERPRISE_TOKEN", ("GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+    if any(result.get(name) for name in existing):
+        return result
+    try:
+        completed = runner(
+            ["gh", "auth", "token", "--hostname", host],
+            capture_output=True, text=True, timeout=timeout, check=False, env=result,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return result
+    token = (completed.stdout or "").strip() if completed.returncode == 0 else ""
+    if token and not any(character.isspace() for character in token):
+        result[variable] = token
+    return result
 
 
 def _api_is_read(arguments: Sequence[str]) -> bool:
