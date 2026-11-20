@@ -1,0 +1,74 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-018",
+  "summary": "Add optional uritime-urtlog extra dependency in pyproject.toml",
+  "workstream": "integration",
+  "classification": {
+    "kind": "FEATURE",
+    "priority": "P2",
+    "origin": "health"
+  },
+  "allowedPaths": [
+    "project/ticket-018/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    "pyproject.toml"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null,
+  "delivery": {
+    "acceptedBaseSha": "7ffea78d10626ea23041d2c4cf091cb35f112773",
+    "targetBranch": "main",
+    "outcome": "Declare optional [project.optional-dependencies] urtlog extra in pyproject.toml while keeping zero mandatory runtime dependencies.",
+    "nonGoals": [
+      "Adding mandatory runtime dependencies to [project].dependencies",
+      "Changing default procache behavior when URTLOG_STATE_DIR is unset",
+      "Automatic PyPI publication"
+    ],
+    "complexity": "S",
+    "estimatedMinutes": 15,
+    "budgets": {
+      "maxImplementationFiles": 1,
+      "maxAffectedComponents": 1,
+      "maxPublicInterfaceChanges": 0,
+      "maxRuntimeDependencies": 0
+    },
+    "architecture": {
+      "status": "accepted",
+      "decision": "Expose uritime-urtlog>=0.3.0 strictly under [project.optional-dependencies] urtlog so offline CI and zero-dep core installs remain unaffected while subactor-procache[urtlog] installs cleanly from a wheelhouse or registry.",
+      "components": [
+        {
+          "name": "packaging",
+          "paths": [
+            "pyproject.toml"
+          ]
+        }
+      ],
+      "responsibilityChanges": false,
+      "interfaceChanges": [],
+      "dataChanges": [],
+      "ui": {
+        "impact": "none",
+        "states": [],
+        "evidence": []
+      },
+      "rollback": "Remove [project.optional-dependencies] urtlog section from pyproject.toml"
+    },
+    "runtimeDependencies": [],
+    "validation": [
+      {
+        "criterion": "AC-01",
+        "commands": [
+          "pytest -q tests/test_urtlog_bridge.py",
+          "./project/governance-check.sh --base origin/main"
+        ],
+        "evidence": "Verified zero mandatory dependencies, optional urtlog extra declaration, pytest pass, and GOV-PASS."
+      }
+    ]
+  }
+}
