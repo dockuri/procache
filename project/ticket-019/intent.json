@@ -1,0 +1,25 @@
+{
+  "schema": "new-project.intent/v3",
+  "ticket": "ticket-019",
+  "summary": "Preserve cached HTTP responses when URTLog configuration fails",
+  "workstream": "application",
+  "classification": {
+    "kind": "BUG",
+    "priority": "P2",
+    "origin": "health"
+  },
+  "allowedPaths": [
+    "project/ticket-019/**",
+    "TODO.md",
+    "project/TICKETS.md",
+    "src/procache/urtlog_bridge.py",
+    "tests/test_urtlog_bridge.py"
+  ],
+  "forbiddenPaths": [
+    "project/ticket-*/user-*.md"
+  ],
+  "stacks": [],
+  "dependsOn": [],
+  "conflictsWith": [],
+  "integrationTicket": null
+}

@@ -39,6 +39,29 @@ class TestProcacheUrtlogBridge(unittest.TestCase):
                 )
             self.assertEqual(res, {"emitted": False, "reason": "urtlog_not_installed"})
 
+    def test_unresolvable_telemetry_directory_preserves_http_responses(self) -> None:
+        response = HTTPResponse(200, {"Cache-Control": "max-age=30"}, b"observed")
+        loader = mock.Mock(return_value=response)
+        url = "https://api.github.com/repos/dockuri/procache"
+        with tempfile.TemporaryDirectory() as tmp:
+            reads = CachedHTTPReads(SQLiteResponseCache(Path(tmp) / "cache.sqlite3", namespace="test"))
+            with (
+                mock.patch.dict(os.environ, {"URTLOG_STATE_DIR": tmp}),
+                mock.patch("procache.urtlog_bridge.resolve_state_dir", side_effect=RuntimeError),
+            ):
+                self.assertEqual(reads.request("GET", url, loader, scope="test", cacheable=True), response)
+                cached = reads.request("GET", url, loader, scope="test", cacheable=True)
+        loader.assert_called_once_with()
+        self.assertEqual((cached.status, cached.body, cached.cache_hit), (200, b"observed", True))
+
+    def test_unusable_telemetry_url_does_not_escape_the_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("procache.urtlog_bridge.importlib.import_module", return_value=object()):
+                result = maybe_emit_http_read(
+                    "GET", "https://example.invalid:unknown/metadata", 200, cache_hit=False, state_dir=tmp,
+                )
+        self.assertEqual(result, {"emitted": False, "reason": "emit_failed"})
+
     @unittest.skipUnless(importlib.util.find_spec("urtlog") is not None, "urtlog not installed")
     def test_cached_http_reads_records_miss_and_hit_and_registers_url(self) -> None:
         urtlog_mod = importlib.import_module("urtlog")
