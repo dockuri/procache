@@ -9,6 +9,9 @@ description = "Process-safe TTL caching and request coalescing for provider read
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 
+[project.optional-dependencies]
+urtlog = ["uritime-urtlog>=0.3.0"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
