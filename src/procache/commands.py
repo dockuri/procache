@@ -65,7 +65,12 @@ class CachedReadCommand:
         except OSError:
             # If identity cannot be established, execute once without sharing.
             return self._execute(argv, timeout=timeout, env=env)
-        key = self.cache.key("command-v2", argv, "scope", scope, os.getcwd(), identity)
+        # With an explicit host and repository the working directory cannot
+        # change the result, so services in different directories share it.
+        # Other reads stay partitioned by the repository context of the cwd.
+        explicit = argv[1] != "api" and _explicit_host_repository_read(argv, effective_env, True, True)
+        context = "explicit-repository" if explicit else os.getcwd()
+        key = self.cache.key("command-v2", argv, "scope", scope, context, identity)
         cooldown_key = self.cache.key("provider-v2", effective_env.get("GH_HOST", "github.com"), identity)
         def load() -> bytes:
             result = self._execute(argv, timeout=timeout, env=env)

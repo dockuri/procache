@@ -37,6 +37,9 @@ The owner asked why procache does not reduce GitHub API load and instructed
       repository, URL or token-class case still executes each time.
 - [x] AC-03: `github_env` resolves the keyring token without persisting it and
       leaves identity unresolved on failure.
+- [x] AC-05: Explicit-repository reads are shared across working directories
+      (services run in different cwds); implicit-repository reads and all
+      `gh api` reads stay partitioned by cwd as before.
 - [x] AC-04: The existing suite passes unchanged; a live read with the
       resolved token produces one provider call and one cache hit.
 

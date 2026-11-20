@@ -72,6 +72,38 @@ def test_ambiguous_host_reads_execute_each_time(tmp_path, monkeypatch, args, env
     assert len(calls) == 2
 
 
+def test_explicit_repository_reads_are_shared_across_working_directories(tmp_path, monkeypatch):
+    runner, calls = _runner(tmp_path, monkeypatch)
+    env = {**PUBLIC, 'GH_CONFIG_DIR': str(tmp_path / 'gh')}
+    args = ['gh', 'pr', 'list', '--repo', 'acme/demo', '--json', 'number']
+    first, second = tmp_path / 'service-a', tmp_path / 'service-b'
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.chdir(first)
+    runner.run(args, env=env)
+    monkeypatch.chdir(second)
+    assert runner.run(args, env=env).cache_hit
+    assert len(calls) == 1
+
+
+def test_implicit_repository_reads_stay_partitioned_by_working_directory(tmp_path, monkeypatch):
+    runner, calls = _runner(tmp_path, monkeypatch)
+    # Both token classes keep the pre-existing admission; without an explicit
+    # repository gh resolves it from the cwd, so the cwd stays in the key.
+    env = {'GH_TOKEN': 'test-credential-a', 'GH_ENTERPRISE_TOKEN': 'test-credential-b',
+           'GH_CONFIG_DIR': str(tmp_path / 'gh')}
+    args = ['gh', 'pr', 'list', '--json', 'number']
+    first, second = tmp_path / 'checkout-a', tmp_path / 'checkout-b'
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.chdir(first)
+    runner.run(args, env=env)
+    assert runner.run(args, env=env).cache_hit
+    monkeypatch.chdir(second)
+    assert not runner.run(args, env=env).cache_hit
+    assert len(calls) == 2
+
+
 def test_mutating_repository_commands_are_never_cached(tmp_path, monkeypatch):
     runner, calls = _runner(tmp_path, monkeypatch)
     env = {**PUBLIC, 'GH_CONFIG_DIR': str(tmp_path / 'gh')}
