@@ -45,6 +45,7 @@ class CachedHTTPReads:
 
     MAX_BODY_BYTES = 4 * 1024 * 1024
     EPOCH_TTL = 86400
+    REVALIDATION_TTL = 3600
 
     def __init__(self, cache: SQLiteResponseCache, *, ttl: float = 15.0) -> None:
         if not math.isfinite(ttl) or not 0 < ttl <= 3600:
@@ -175,6 +176,11 @@ class CachedHTTPReads:
         status, headers, body = json.loads(payload)
         return HTTPResponse(status, headers, base64.b64decode(body), cache_hit=hit)
 
+    @staticmethod
+    def _etag(headers: Mapping[str, str]) -> str | None:
+        tag = CachedHTTPReads._headers(headers).get("etag", "")
+        return tag if re.fullmatch(r'(?:W/)?"[\x21\x23-\x7e\x80-\xff]*"', tag) else None
+
     def request(
         self,
         method: str,
@@ -189,7 +195,14 @@ class CachedHTTPReads:
         fresh: bool = False,
         stream: bool = False,
         graphql: bool = False,
+        revalidate: Callable[[str], HTTPResponse] | None = None,
     ) -> HTTPResponse:
+        """Optionally revalidate an expired full GET with a scoped ETag.
+
+        The callback sends an authenticated If-None-Match request using the
+        supplied tag. The former body is returned only when the provider
+        confirms it with 304. Such a response has cache_hit=False.
+        """
         method = method.upper()
         graphql_read = graphql and method == "POST" and self._graphql_read(body)
         if method not in {"GET", "HEAD"} and not graphql_read:
@@ -215,8 +228,28 @@ class CachedHTTPReads:
         if cached is not None:
             return self._decode(cached.value, True)
 
+        explicit_conditions = {"range", "if-range", "if-match", "if-none-match",
+                               "if-modified-since", "if-unmodified-since"}
+        revalidation_key = (
+            self.cache.key("http-etag-v1", key)
+            if revalidate is not None and method == "GET" and not explicit_conditions.intersection(request_headers)
+            else None
+        )
+
         def load() -> bytes:
-            response = loader()
+            previous = self.cache.get(revalidation_key) if revalidation_key else None
+            if revalidate is not None and previous is not None and previous.etag is not None:
+                response = revalidate(previous.etag)
+                if response.status == 304:
+                    returned_tag = self._headers(response.headers).get("etag")
+                    if returned_tag is None or returned_tag.removeprefix("W/") == previous.etag.removeprefix("W/"):
+                        old = self._decode(previous.value, False)
+                        headers = self._headers(old.headers) | self._headers(response.headers)
+                        response = replace(old, headers=headers)
+                    else:
+                        response = loader()
+            else:
+                response = loader()
             value = self._encode(response)
             ttl = self._ttl(response)
             if graphql_read:
@@ -243,7 +276,14 @@ class CachedHTTPReads:
                 # them when serving the cached representation.
                 stored = replace(response, headers={k: v for k, v in response.headers.items()
                                                     if k.lower() != "set-cookie"})
-                self.cache.put(key, self._encode(stored), ttl=ttl)
+                stored_value = self._encode(stored)
+                self.cache.put(key, stored_value, ttl=ttl)
+                if revalidation_key and response.status == 200 and (tag := self._etag(stored.headers)):
+                    self.cache.put(revalidation_key, stored_value, ttl=self.REVALIDATION_TTL, etag=tag)
+                    return value
+            if revalidation_key and previous is not None and previous.etag is not None:
+                # Replace a validator after a response that cannot be retained.
+                self.cache.put(revalidation_key, b"", ttl=self.ttl)
             return value
 
         value, hit = self.cache.get_or_set(
@@ -252,7 +292,8 @@ class CachedHTTPReads:
         return self._decode(value, hit)
 
     async def arequest(
-        self, method: str, url: str, loader: Callable[[], Awaitable[HTTPResponse]], **kwargs: Any,
+        self, method: str, url: str, loader: Callable[[], Awaitable[HTTPResponse]], *,
+        revalidate: Callable[[str], Awaitable[HTTPResponse]] | None = None, **kwargs: Any,
     ) -> HTTPResponse:
         """Run async SDK transport on its own loop without blocking that loop.
 
@@ -265,4 +306,11 @@ class CachedHTTPReads:
             return await loader()
         def load() -> HTTPResponse:
             return asyncio.run_coroutine_threadsafe(call_loader(), loop).result()
-        return await asyncio.to_thread(self.request, method, url, load, **kwargs)
+        async def call_revalidator(tag: str) -> HTTPResponse:
+            assert revalidate is not None
+            return await revalidate(tag)
+        def refresh(tag: str) -> HTTPResponse:
+            return asyncio.run_coroutine_threadsafe(call_revalidator(tag), loop).result()
+        return await asyncio.to_thread(
+            self.request, method, url, load, revalidate=refresh if revalidate is not None else None, **kwargs,
+        )

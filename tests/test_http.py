@@ -44,6 +44,90 @@ def test_same_provider_record_is_loaded_once(cache, origin):
     assert len(calls) == 1
 
 
+def test_expired_metadata_reuses_body_only_after_a_scoped_304(tmp_path):
+    now = 100.0
+    calls = []
+    path = tmp_path / "conditional.sqlite3"
+    url = "https://api.github.test/repos/example/widgets/pulls"
+
+    def load():
+        calls.append(("full", None))
+        return HTTPResponse(200, {"ETag": '"original"', "x-ratelimit-remaining": "500"}, b"open PRs")
+
+    def revalidate(tag):
+        calls.append(("conditional", tag))
+        return HTTPResponse(304, {"etag": 'W/"original"', "X-RateLimit-Remaining": "497"}, b"")
+
+    with SQLiteResponseCache(path, clock=lambda: now) as store:
+        reader = CachedHTTPReads(store)
+        reader.request("GET", url, load, scope="account-a", cacheable=True, revalidate=revalidate)
+        now += 14
+        assert reader.request("GET", url, load, scope="account-a", cacheable=True, revalidate=revalidate).cache_hit
+
+    # The next poll uses a separate cache instance and the ordinary entry has expired.
+    now += 16
+    with SQLiteResponseCache(path, clock=lambda: now) as store:
+        reader = CachedHTTPReads(store)
+        result = reader.request("GET", url, load, scope="account-a", cacheable=True, revalidate=revalidate)
+        assert (result.status, result.body, result.cache_hit) == (200, b"open PRs", False)
+        assert result.headers["x-ratelimit-remaining"] == "497"
+        reader.request("GET", url, load, scope="account-b", cacheable=True, revalidate=revalidate)
+        reader.request("GET", url, load, scope="account-a", cacheable=True, fresh=True, revalidate=revalidate)
+    assert calls == [("full", None), ("conditional", '"original"'), ("full", None), ("full", None)]
+
+
+@pytest.mark.parametrize(("response", "loads"), [
+    (HTTPResponse(200, {"ETag": '"new"'}, b"changed"), [b"initial", b"changed"]),
+    (HTTPResponse(304, {"ETag": '"mismatch"'}, b""), [b"initial", b"unconditional"]),
+    (HTTPResponse(404, {}, b"gone"), [b"initial", b"gone"]),
+])
+def test_changed_denied_or_mismatched_validator_does_not_return_retained_body(tmp_path, response, loads):
+    now = 100.0
+    url = "https://api.github.test/repos/example/widgets/pulls"
+    responses = iter([HTTPResponse(200, {"ETag": '"original"'}, b"initial"),
+                      HTTPResponse(200, {}, b"unconditional")])
+    with SQLiteResponseCache(tmp_path / "conditional.sqlite3", clock=lambda: now) as store:
+        reader = CachedHTTPReads(store)
+
+        def fetch():
+            return reader.request(
+                "GET", url, lambda: next(responses), scope="account-a", cacheable=True, revalidate=lambda _: response,
+            )
+
+        first = fetch()
+        now += 30
+        assert [first.body, fetch().body] == loads
+
+
+def test_mutation_invalidates_retained_etag_and_async_transport_stays_on_its_loop(tmp_path):
+    now = 100.0
+    url = "https://api.github.test/repos/example/widgets/pulls"
+    calls = []
+
+    async def check(reader):
+        nonlocal now
+        loop = asyncio.get_running_loop()
+
+        async def load():
+            calls.append("full")
+            return HTTPResponse(200, {"ETag": '"original"'}, b"open PRs")
+
+        async def revalidate(tag):
+            assert asyncio.get_running_loop() is loop
+            calls.append(tag)
+            return HTTPResponse(304, {}, b"")
+
+        await reader.arequest("GET", url, load, scope="account-a", cacheable=True, revalidate=revalidate)
+        now += 30
+        await reader.arequest("GET", url, load, scope="account-a", cacheable=True, revalidate=revalidate)
+        await reader.arequest("POST", url, load, scope="account-a")
+        await reader.arequest("GET", url, load, scope="account-a", cacheable=True, revalidate=revalidate)
+
+    with SQLiteResponseCache(tmp_path / "conditional.sqlite3", clock=lambda: now) as store:
+        asyncio.run(check(CachedHTTPReads(store)))
+    assert calls == ["full", '"original"', "full", "full"]
+
+
 @pytest.mark.parametrize('lifetimes', [(15, 15.0), (15.0, 15)])
 def test_equivalent_numeric_lifetimes_share_a_record(tmp_path, lifetimes):
     path = tmp_path / 'shared.sqlite3'
