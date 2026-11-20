@@ -17,7 +17,7 @@ from procache.urtlog_bridge import maybe_emit_http_read, resolve_state_dir, sani
 
 class TestProcacheUrtlogBridge(unittest.TestCase):
     def test_sanitize_url_strips_credentials_query_and_fragment(self) -> None:
-        raw = "https://user:secret_tok@API.GitHub.com:443/repos/dockuri/procache?token=abc#frag"
+        raw = "https://alice:example@API.GitHub.com:443/repos/dockuri/procache?page=2&sort=asc#frag"
         self.assertEqual(sanitize_url(raw), "https://api.github.com:443/repos/dockuri/procache")
 
     def test_inactive_when_env_unset(self) -> None:
@@ -47,7 +47,7 @@ class TestProcacheUrtlogBridge(unittest.TestCase):
             state_dir = Path(tmp) / "urtlog"
             cache = SQLiteResponseCache(Path(tmp) / "cache.sqlite3", namespace="test")
             http_reads = CachedHTTPReads(cache, ttl=30.0)
-            url = "https://api.github.com/repos/dockuri/procache?secret=should_strip"
+            url = "https://api.github.com/repos/dockuri/procache?page=7&filter=should_strip"
 
             def loader() -> HTTPResponse:
                 return HTTPResponse(200, {"Cache-Control": "max-age=30"}, b'{"ok":true}')
