@@ -50,26 +50,28 @@ def maybe_emit_http_read(
     sensitivity: str = "internal",
 ) -> dict[str, Any]:
     """Emit a sanitized Procache HTTP read observation into uritime-urtlog fail-open."""
-    target_dir = resolve_state_dir(state_dir)
-    if target_dir is None:
-        return {"emitted": False, "reason": "disabled"}
-
     try:
-        urtlog_mod = importlib.import_module("urtlog")
-    except (ImportError, OSError, AttributeError, RuntimeError):
-        return {"emitted": False, "reason": "urtlog_not_installed"}
+        target_dir = resolve_state_dir(state_dir)
+        if target_dir is None:
+            return {"emitted": False, "reason": "disabled"}
 
-    safe_url = sanitize_url(url)
-    parsed = urlsplit(safe_url)
-    host_slug = _slug(parsed.hostname or "unknown", "unknown")
-    method_slug = _slug(method, "get")
-    outcome_slug = "hit" if cache_hit else "miss"
-    now_us = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
-    url_hash = hashlib.sha256(safe_url.encode("utf-8")).hexdigest()[:14]
-    eid = "prc-" + hashlib.sha256(f"{now_us}|{method_slug}|{safe_url}|{status_code}|{outcome_slug}".encode("utf-8")).hexdigest()[:16]
-    status = "succeeded" if 200 <= int(status_code) < 400 else "failed"
+        try:
+            urtlog_mod = importlib.import_module("urtlog")
+        except (ImportError, OSError, AttributeError, RuntimeError):
+            return {"emitted": False, "reason": "urtlog_not_installed"}
 
-    try:
+        safe_url = sanitize_url(url)
+        parsed = urlsplit(safe_url)
+        host_slug = _slug(parsed.hostname or "unknown", "unknown")
+        method_slug = _slug(method, "get")
+        outcome_slug = "hit" if cache_hit else "miss"
+        now_us = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
+        url_hash = hashlib.sha256(safe_url.encode("utf-8")).hexdigest()[:14]
+        eid = "prc-" + hashlib.sha256(
+            f"{now_us}|{method_slug}|{safe_url}|{status_code}|{outcome_slug}".encode("utf-8")
+        ).hexdigest()[:16]
+        status = "succeeded" if 200 <= int(status_code) < 400 else "failed"
+
         with urtlog_mod.UrtClient(target_dir, source="procache", repository=repository) as client:
             record = urtlog_mod.UrtEventRecord(
                 event_id=eid,
