@@ -5,6 +5,22 @@ from typing import Any
 
 from .cache import SQLiteResponseCache, is_rate_limit_error
 
+REVALIDATION_TTL = 86400.0
+_CONDITIONAL_HEADERS = frozenset({
+    "if-none-match", "if-modified-since", "if-match", "if-unmodified-since", "if-range", "range",
+})
+
+
+def _etag(headers: Any) -> str | None:
+    if not isinstance(headers, dict):
+        return None
+    tag = next((str(value) for name, value in headers.items() if str(name).lower() == "etag"), "")
+    return tag or None
+
+
+def _same_tag(left: str, right: str) -> bool:
+    return left.removeprefix("W/") == right.removeprefix("W/")
+
 
 class CachedPyGithubRequester:
     """Read-through adapter for PyGithub's JSON requester.
@@ -13,6 +29,11 @@ class CachedPyGithubRequester:
     Response headers and request representation are preserved. All writes go
     directly through the delegated requester; rate-limit exceptions open the
     shared provider cooldown in ``SQLiteResponseCache``.
+
+    After the short TTL an expired read is revalidated with the stored ETag.
+    PyGithub returns a 304 as headers with no payload; the former payload is
+    reused only then and when the provider confirms the same tag. GitHub does
+    not count such a 304 against the primary rate limit.
     """
 
     def __init__(self, delegate: Any, cache: SQLiteResponseCache, *, ttl: float = 15.0) -> None:
@@ -43,13 +64,40 @@ class CachedPyGithubRequester:
             input, follow_302_redirect,
         )
 
-        def load() -> bytes:
-            response_headers, payload = self._delegate.requestJsonAndCheck(
-                verb, url, parameters, headers, input, follow_302_redirect
-            )
+        explicit = {str(name).lower() for name in (headers or {})} & _CONDITIONAL_HEADERS
+        revalidation_key = None if explicit else self._cache.key("pygithub-etag-v1", key)
+
+        def encode(response_headers: Any, payload: Any) -> bytes:
             return json.dumps(
                 [dict(response_headers), payload], separators=(",", ":"), default=str
             ).encode("utf-8")
+
+        def load() -> bytes:
+            previous = self._cache.get(revalidation_key) if revalidation_key else None
+            if previous is not None and previous.etag:
+                conditional = {**(headers or {}), "If-None-Match": previous.etag}
+                response_headers, payload = self._delegate.requestJsonAndCheck(
+                    verb, url, parameters, conditional, input, follow_302_redirect
+                )
+                returned = _etag(response_headers)
+                if payload is None and (returned is None or _same_tag(returned, previous.etag)):
+                    old_headers, old_payload = json.loads(previous.value)
+                    value = encode({**old_headers, **dict(response_headers)}, old_payload)
+                    self._cache.put(revalidation_key, value, ttl=REVALIDATION_TTL, etag=previous.etag)
+                    return value
+                if payload is None:
+                    response_headers, payload = self._delegate.requestJsonAndCheck(
+                        verb, url, parameters, headers, input, follow_302_redirect
+                    )
+            else:
+                response_headers, payload = self._delegate.requestJsonAndCheck(
+                    verb, url, parameters, headers, input, follow_302_redirect
+                )
+            value = encode(response_headers, payload)
+            tag = _etag(response_headers)
+            if revalidation_key and tag and payload is not None:
+                self._cache.put(revalidation_key, value, ttl=REVALIDATION_TTL, etag=tag)
+            return value
 
         value, _ = self._cache.get_or_set(
             key,
