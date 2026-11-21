@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import re
 import subprocess
 import threading
+import time
 from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -71,11 +73,12 @@ class CachedReadCommand:
         explicit = argv[1] != "api" and _explicit_host_repository_read(argv, effective_env, True, True)
         context = "explicit-repository" if explicit else os.getcwd()
         key = self.cache.key("command-v2", argv, "scope", scope, context, identity)
-        cooldown_key = self.cache.key("provider-v2", effective_env.get("GH_HOST", "github.com"), identity)
+        family = _api_family(argv)
+        cooldown_key = self.cache.key("provider-v3", effective_env.get("GH_HOST", "github.com"), identity, family)
         def load() -> bytes:
             result = self._execute(argv, timeout=timeout, env=env)
             if result.returncode and is_rate_limit_error(RuntimeError(result.stderr)):
-                self.cache.cooldown(cooldown_key, ttl=self.cooldown_seconds)
+                self.cache.cooldown(cooldown_key, ttl=self._cooldown_until_reset(family, env))
             return json.dumps(
                 {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr},
                 separators=(",", ":"),
@@ -101,6 +104,25 @@ class CachedReadCommand:
             result["stderr"],
             cache_hit=hit,
         )
+
+    def _cooldown_until_reset(self, family: str, env: dict[str, str] | None) -> float:
+        """Cool down until the exhausted resource resets (bounded, jittered); 60 s without evidence.
+
+        ``gh api rate_limit`` does not count against the primary rate limit. A
+        secondary limit leaves the resource with quota, so the default applies.
+        """
+        try:
+            observed = self._execute(("gh", "api", "rate_limit"), timeout=10, env=env)
+            resource = json.loads(observed.stdout)["resources"][family] if observed.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+            resource = None
+        if not isinstance(resource, dict) or resource.get("remaining") != 0:
+            return self.cooldown_seconds
+        reset = resource.get("reset")
+        if isinstance(reset, bool) or not isinstance(reset, (int, float)):
+            return self.cooldown_seconds
+        wait = float(reset) - time.time() + random.uniform(1.0, 15.0)
+        return min(MAX_COOLDOWN_SECONDS, max(self.cooldown_seconds, wait))
 
     @staticmethod
     def _execute(args: tuple[str, ...], *, timeout: int | None, env: dict[str, str] | None) -> CachedCommandResult:
@@ -305,6 +327,24 @@ def github_env(
     if token and not any(character.isspace() for character in token):
         result[variable] = token
     return result
+
+
+MAX_COOLDOWN_SECONDS = 3600.0
+_REST_COMMANDS = frozenset({"run", "workflow", "release", "cache", "secret", "variable", "gist", "ruleset", "attestation"})
+
+
+def _api_family(argv: Sequence[str]) -> str:
+    """GitHub rate-limit resource a gh read draws from: ``core``, ``graphql`` or ``search``."""
+    command = argv[1] if len(argv) > 1 else ""
+    if command == "search":
+        return "search"
+    if command == "api":
+        positional = [item for item in argv[2:] if not item.startswith("-")]
+        endpoint = next((item for item in positional if item not in {"GET", "HEAD"}), "")
+        if endpoint == "graphql":
+            return "graphql"
+        return "search" if endpoint.lstrip("/").startswith("search/") else "core"
+    return "core" if command in _REST_COMMANDS else "graphql"
 
 
 def _api_is_read(arguments: Sequence[str]) -> bool:
