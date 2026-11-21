@@ -327,7 +327,7 @@ def test_textual_403_stops_further_commands_for_same_identity(tmp_path, monkeypa
     env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_HOST': 'github.com', 'GH_TOKEN': 'test-credential-a'}
     assert first.run(['gh', 'api', 'user'], env=env).returncode == 1
     assert second.run(['gh', 'api', 'repos/acme/demo'], env=env).returncode == 75
-    assert len(calls) == 1
+    assert [call for call in calls if call[1:] != ('api', 'rate_limit')] == [('gh', 'api', 'user')]
 
 
 def test_unrelated_issue_number_is_not_a_rate_limit():
@@ -356,3 +356,62 @@ def test_branch_name_in_cli_diagnostic_does_not_block_the_next_read(tmp_path, mo
     following = second.run(['gh', 'api', 'repos/acme/demo/commits/head/status'], env=env)
     assert following.returncode == 0
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize(('argv', 'family'), [
+    (['gh', 'api', 'repos/acme/demo'], 'core'),
+    (['gh', 'api', '--method', 'GET', 'search/issues', '-f', 'q=x'], 'search'),
+    (['gh', 'api', 'graphql', '-f', 'query=x'], 'graphql'),
+    (['gh', 'search', 'prs', '--owner', 'acme'], 'search'),
+    (['gh', 'run', 'list'], 'core'),
+    (['gh', 'pr', 'view', '1'], 'graphql'),
+])
+def test_api_family(argv, family):
+    from procache.commands import _api_family
+    assert _api_family(argv) == family
+
+
+def _limited(tmp_path, monkeypatch, resources):
+    import json
+    calls = []
+    def execute(args, **kwargs):
+        calls.append(tuple(args))
+        if tuple(args[1:]) == ('api', 'rate_limit'):
+            if resources is None:
+                return subprocess.CompletedProcess(args, 1, '', 'offline')
+            return subprocess.CompletedProcess(args, 0, json.dumps({'resources': resources}), '')
+        if args[1] == 'pr':
+            return subprocess.CompletedProcess(args, 1, '', 'GraphQL: API rate limit exceeded')
+        return subprocess.CompletedProcess(args, 0, 'ok', '')
+    monkeypatch.setattr('procache.commands.subprocess.run', execute)
+    cache = SQLiteResponseCache(tmp_path / 'cache.sqlite3')
+    env = {'GH_CONFIG_DIR': str(tmp_path / 'gh'), 'GH_HOST': 'github.com', 'GH_TOKEN': 'test-credential-a'}
+    return CachedReadCommand(cache), cache, env, calls
+
+
+def _graphql_cooldown(cache, env):
+    from procache.commands import _credential_scope
+    return cache.cooldown_remaining(cache.key('provider-v3', 'github.com', _credential_scope(env), 'graphql'))
+
+
+def test_exhausted_resource_cools_down_until_reset_without_blocking_other_families(tmp_path, monkeypatch):
+    import time
+    runner, cache, env, calls = _limited(tmp_path, monkeypatch, {
+        'graphql': {'remaining': 0, 'reset': time.time() + 900}, 'core': {'remaining': 4000, 'reset': time.time() + 900}})
+    args = ['gh', 'pr', 'view', '1', '--repo', 'acme/demo']
+    assert runner.run(args, env=env).returncode == 1
+    assert 900 <= _graphql_cooldown(cache, env) <= 916
+    assert runner.run(args, env=env).returncode == 75
+    assert runner.run(['gh', 'api', 'repos/acme/demo'], env=env).stdout == 'ok'
+
+
+@pytest.mark.parametrize(('resources', 'low', 'high'), [
+    (None, 59, 60),                                           # no evidence: default
+    ({'graphql': {'remaining': 12, 'reset': 9e12}}, 59, 60),  # secondary limit: quota left
+    ({'graphql': {'remaining': 0, 'reset': 1.0}}, 59, 60),    # reset passed: lower bound
+    ({'graphql': {'remaining': 0, 'reset': 9e12}}, 3599, 3600),  # far reset: upper bound
+])
+def test_cooldown_bounds(tmp_path, monkeypatch, resources, low, high):
+    runner, cache, env, _ = _limited(tmp_path, monkeypatch, resources)
+    runner.run(['gh', 'pr', 'view', '1', '--repo', 'acme/demo'], env=env)
+    assert low <= _graphql_cooldown(cache, env) <= high
